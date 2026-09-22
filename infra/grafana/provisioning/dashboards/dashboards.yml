@@ -1,0 +1,18 @@
+# Dashboard provider placeholder for Delivery 0.
+#
+# No dashboard JSON exists yet — Delivery 7 (Monitoring) drops the actual
+# dashboard definition(s) into this same `dashboards/` folder once services
+# expose real metrics. This provider config just wires the folder up so
+# `docker compose up` already has Grafana watching it.
+
+apiVersion: 1
+
+providers:
+  - name: default
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

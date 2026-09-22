@@ -1,0 +1,16 @@
+# Placeholder Prometheus config for Delivery 0.
+#
+# Real scrape targets (auth-service, video-service, worker-service,
+# notification-service `/metrics` endpoints, plus RabbitMQ's
+# rabbitmq_prometheus plugin) are added in Delivery 7 — Monitoring, once
+# those services actually expose metrics. For now this just proves the
+# Prometheus container boots with a valid config and scrapes itself.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

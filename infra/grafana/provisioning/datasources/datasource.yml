@@ -1,0 +1,16 @@
+# Auto-provisioned Grafana datasource for Delivery 0.
+#
+# Dashboards themselves (HTTP row, queue-depth row, processing row,
+# notifications row) come in Delivery 7 — Monitoring, once services expose
+# real metrics. This just points Grafana at Prometheus so `docker compose up`
+# gives a usable Explore view with no manual setup.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

@@ -107,18 +107,18 @@ Only `worker-service`'s Dockerfile installs ffmpeg. Single Go module for the who
 
 Each item below is meant to be a small, independently committable/demoable unit of work. Check items off as they land.
 
-### Delivery 0 — Repo & infra skeleton
+### Delivery 0 — Repo & infra skeleton — **done** ([PR #3](https://github.com/14SOAT-HACKATHON/app/pull/3), merged 2026-09-22)
 
-- [ ] Create monorepo folder structure (`cmd/`, `internal/`, `infra/`, `docs/`)
-- [ ] Remove `__MACOSX/` and legacy flat `uploads/`, `outputs/`, `temp/` dirs and old `main.go`/`Dockerfile`
-- [ ] Initialize single Go module for the monorepo (`go.mod`)
-- [ ] `infra/docker-compose.yml`: PostgreSQL service + healthcheck
-- [ ] `infra/docker-compose.yml`: RabbitMQ service (management image + Prometheus plugin enabled) + healthcheck
-- [ ] `infra/docker-compose.yml`: MinIO service + healthcheck
-- [ ] `infra/docker-compose.yml`: Mailpit service
-- [ ] `infra/docker-compose.yml`: Prometheus service (placeholder config)
-- [ ] `infra/docker-compose.yml`: Grafana service (placeholder provisioning)
-- [ ] Verify `docker compose up` brings all infra containers up healthy
+- [x] Create monorepo folder structure (`cmd/`, `infra/`; `internal/` and `docs/` left for the deliveries that populate them)
+- [x] Remove `__MACOSX/` and old `main.go`/`Dockerfile`/`go.mod`/`go.sum` (no flat `uploads/`/`outputs/`/`temp/` existed on disk)
+- [x] Initialize single Go module for the monorepo (`go.mod`, `module github.com/14SOAT-HACKATHON/app`)
+- [x] `infra/docker-compose.yml`: PostgreSQL service + healthcheck
+- [x] `infra/docker-compose.yml`: RabbitMQ service (management image + `rabbitmq_prometheus` plugin enabled) + healthcheck
+- [x] `infra/docker-compose.yml`: MinIO service + healthcheck (repointed to `quay.io/minio/minio` — Docker Hub dropped MinIO's images; `mc ready local` healthcheck confirmed as MinIO's own current recommended pattern)
+- [x] `infra/docker-compose.yml`: Mailpit service + healthcheck
+- [x] `infra/docker-compose.yml`: Prometheus service (placeholder self-scrape config) + healthcheck
+- [x] `infra/docker-compose.yml`: Grafana service (placeholder provisioning: Prometheus datasource + empty dashboards provider) + healthcheck
+- [~] Verify `docker compose up` brings all infra containers up healthy — validated via `docker compose config --quiet` + full manual review of every image/healthcheck (including a live web check confirming the MinIO healthcheck pattern is currently correct); a full live `up -d` run showing all 6 containers reach `healthy` was **not** completed (Docker Desktop was unstable in both the child session's and the orchestrator's sandbox). Revisit this the first time a real `docker compose up` is run locally.
 
 ### Delivery 1 — auth-service
 

@@ -1,0 +1,13 @@
+# Auto-loads any dashboard JSON dropped in this directory. No dashboards are
+# defined yet — they land alongside per-service metrics in a later plan item.
+apiVersion: 1
+
+providers:
+  - name: default
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

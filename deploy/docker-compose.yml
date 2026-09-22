@@ -1,0 +1,136 @@
+name: fiap-x
+
+# Local/demo orchestration for the FIAP X microservices rewrite.
+#
+# Infra services (postgres, redis, rabbitmq, prometheus, grafana) are fully
+# wired and come up healthy on `docker compose up`. The four application
+# services are still stubs (see services/*/main.go) — their containers build
+# and start but do nothing meaningful yet; that lands incrementally in later
+# plan items. See ../.ai-agents/PLAN.md.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fiapx
+      POSTGRES_PASSWORD: fiapx
+      POSTGRES_DB: fiapx
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiapx -d fiapx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: fiapx
+      RABBITMQ_DEFAULT_PASS: fiapx
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+  # --- Application services (stubs — see services/*/main.go) ---------------
+
+  auth-service:
+    build:
+      context: ../services/auth-service
+    environment:
+      DATABASE_URL: postgres://fiapx:fiapx@postgres:5432/fiapx?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  video-service:
+    build:
+      context: ../services/video-service
+    environment:
+      DATABASE_URL: postgres://fiapx:fiapx@postgres:5432/fiapx?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker-service:
+    build:
+      context: ../services/worker-service
+    environment:
+      DATABASE_URL: postgres://fiapx:fiapx@postgres:5432/fiapx?sslmode=disable
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: ../services/notification-service
+    environment:
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

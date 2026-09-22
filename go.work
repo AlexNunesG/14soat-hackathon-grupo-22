@@ -1,0 +1,8 @@
+go 1.21
+
+use (
+	./services/auth-service
+	./services/video-service
+	./services/worker-service
+	./services/notification-service
+)

@@ -1,0 +1,153 @@
+# Infra-only stack for local development (Delivery 0 — Repo & infra skeleton).
+#
+# The 4 application services (auth-service, video-service, worker-service,
+# notification-service) are wired in as each is implemented, starting with
+# Delivery 1. For now this brings up only their backing infra:
+# PostgreSQL, RabbitMQ, MinIO, Mailpit, Prometheus and Grafana.
+#
+# Usage:
+#   docker compose -f infra/docker-compose.yml up -d
+#   docker compose -f infra/docker-compose.yml down -v
+
+name: fiap-x
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fiapx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fiapx}
+      POSTGRES_DB: ${POSTGRES_DB:-fiapx}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fiapx} -d ${POSTGRES_DB:-fiapx}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-fiapx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-fiapx}
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+      - "15692:15692" # Prometheus metrics (rabbitmq_prometheus plugin)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  minio:
+    # MinIO removed its images from Docker Hub (Oct 2025); quay.io is the
+    # current official registry for both minio/minio and minio/mc.
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-fiapx}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-fiapx123}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  # Short-lived helper that creates the app's MinIO bucket and exits.
+  # `video-service`/`worker-service` (Deliveries 2-3) will just assume the
+  # bucket already exists rather than creating it themselves.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-fiapx}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-fiapx123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-videos}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+    networks:
+      - fiapx
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+networks:
+  fiapx:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:

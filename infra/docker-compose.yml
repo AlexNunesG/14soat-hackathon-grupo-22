@@ -1,9 +1,10 @@
-# Infra-only stack for local development (Delivery 0 — Repo & infra skeleton).
+# Local development stack (infra + application services, wired in as each
+# is implemented).
 #
-# The 4 application services (auth-service, video-service, worker-service,
-# notification-service) are wired in as each is implemented, starting with
-# Delivery 1. For now this brings up only their backing infra:
-# PostgreSQL, RabbitMQ, MinIO, Mailpit, Prometheus and Grafana.
+# auth-service landed in Delivery 1. The remaining 3 application services
+# (video-service, worker-service, notification-service) are wired in as
+# each is implemented in later deliveries. Backing infra: PostgreSQL,
+# RabbitMQ, MinIO, Mailpit, Prometheus and Grafana.
 #
 # Usage:
 #   docker compose -f infra/docker-compose.yml up -d
@@ -135,6 +136,36 @@ services:
       - "3000:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fiapx
+
+  auth-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile.auth-service
+    environment:
+      PORT: 8081
+      POSTGRES_USER: ${POSTGRES_USER:-fiapx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fiapx}
+      POSTGRES_DB: ${POSTGRES_DB:-fiapx}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # Dev-only default — override this in any real deployment. This same
+      # value must be shared with video-service (Delivery 2) once it adds
+      # JWT verification middleware, since both sit in the same trust
+      # boundary (see .ai-agents/PLAN.md).
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-production}
+      JWT_TTL_HOURS: ${JWT_TTL_HOURS:-24}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/auth/health"]
       interval: 5s
       timeout: 5s
       retries: 10

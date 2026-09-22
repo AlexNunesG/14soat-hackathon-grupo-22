@@ -27,32 +27,50 @@ A single Go module (`go.mod`) covers the whole monorepo — no `go.work`.
 
 ## Status
 
-This repo is currently at **Delivery 0 — repo & infra skeleton**: the
-folder layout, Go module, and backing infra (Postgres/RabbitMQ/MinIO/
-Mailpit/Prometheus/Grafana) are wired up in Compose. The 4 `cmd/*/main.go`
-entrypoints are placeholder stubs — no auth, video, worker, or notification
-logic yet. That lands in Deliveries 1-4 per the plan above.
+This repo is currently at **Delivery 1 — auth-service**: repo/infra
+skeleton (Delivery 0) plus registration, login, and health-check endpoints
+backed by PostgreSQL, with bcrypt password hashing and HS256 JWTs. The
+other 3 `cmd/*/main.go` entrypoints are still placeholder stubs — video,
+worker, and notification logic land in Deliveries 2-4 per the plan above.
 
-## Quickstart — infra-only stack
+## Quickstart
 
-Brings up Postgres, RabbitMQ, MinIO, Mailpit, Prometheus and Grafana (no
-app services yet):
+Brings up Postgres, RabbitMQ, MinIO, Mailpit, Prometheus, Grafana, and
+auth-service:
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml up -d --build
 docker compose -f infra/docker-compose.yml ps   # wait for all to be healthy
 ```
 
 Once healthy:
 
-| Service    | URL                              | Notes                          |
-|------------|-----------------------------------|---------------------------------|
-| Postgres   | `localhost:5432`                  | user/pass/db default to `fiapx` |
-| RabbitMQ   | http://localhost:15672            | management UI, `fiapx`/`fiapx`  |
-| MinIO      | http://localhost:9001             | console, `fiapx`/`fiapx123`     |
-| Mailpit    | http://localhost:8025             | dev SMTP inbox                  |
-| Prometheus | http://localhost:9090             | placeholder config for now      |
-| Grafana    | http://localhost:3000             | `admin`/`admin`, Prometheus datasource pre-provisioned |
+| Service      | URL                              | Notes                          |
+|--------------|-----------------------------------|---------------------------------|
+| auth-service | http://localhost:8081             | see endpoints below              |
+| Postgres     | `localhost:5432`                  | user/pass/db default to `fiapx` |
+| RabbitMQ     | http://localhost:15672            | management UI, `fiapx`/`fiapx`  |
+| MinIO        | http://localhost:9001             | console, `fiapx`/`fiapx123`     |
+| Mailpit      | http://localhost:8025             | dev SMTP inbox                  |
+| Prometheus   | http://localhost:9090             | placeholder config for now      |
+| Grafana      | http://localhost:3000             | `admin`/`admin`, Prometheus datasource pre-provisioned |
+
+### auth-service endpoints
+
+```bash
+# Register
+curl -X POST http://localhost:8081/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"password123"}'
+
+# Login (returns a Bearer JWT, valid 24h by default)
+curl -X POST http://localhost:8081/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"demo@example.com","password":"password123"}'
+
+# Health check
+curl http://localhost:8081/auth/health
+```
 
 Tear down (including volumes):
 

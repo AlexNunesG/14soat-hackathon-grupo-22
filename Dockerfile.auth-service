@@ -1,0 +1,24 @@
+# Dockerfile.auth-service — multi-stage build for the auth-service binary.
+#
+# Build context is the repo root (single Go module for the monorepo), e.g.:
+#   docker build -f Dockerfile.auth-service -t fiapx/auth-service .
+# infra/docker-compose.yml points its build context at ".." for this reason.
+
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/auth-service ./cmd/auth-service
+COPY internal ./internal
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/auth-service ./cmd/auth-service
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=build /out/auth-service .
+
+EXPOSE 8081
+ENTRYPOINT ["./auth-service"]

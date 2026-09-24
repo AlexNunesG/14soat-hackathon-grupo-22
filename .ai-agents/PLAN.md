@@ -166,7 +166,7 @@ at the top of this plan.
       (gin ≥ v1.12 is compatible). Linter versions are pinned in the lint step.
 - [x] Add `Makefile` (`make lint test up down`; `make check` before pushing) and `.editorconfig`.
 - [x] Add `golangci-lint` config and run it in CI (v2.14.0 pinned in `Makefile` and `ci.yml`; `make tools` installs it).
-- [ ] Remove the stray `__MACOSX/` folder and add it to `.gitignore`.
+- [x] Remove the stray `__MACOSX/` folder and add it to `.gitignore` (plus `.DS_Store`, `._*`, `/bin/`, `*.test`, `.env`).
 
 ### Phase 1 — Rebuild the integration tests for the new behavior (tests first)
 
@@ -375,3 +375,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Plan created; challenge PDF added to `.ai-agents/`. |
 | 2026-09-24 | §5 decided: Phase 1 rebuilds the tests for the new behavior, Phase 2 implements it. Phases renumbered. |
 | 2026-09-24 | Added Ground rules: tests are the spec (PDF wins on conflict), avoid changing them, enable them with the feature. |
+| 2026-09-24 | Phase 0 done: ADRs 0001/0002 + CLAUDE.md (#10), Go 1.27 (#11), Makefile + .editorconfig (#12), golangci-lint v2.14.0 (#13), `__MACOSX` cleanup. |

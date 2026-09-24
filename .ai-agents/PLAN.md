@@ -193,17 +193,31 @@ No production code in this phase.
   - States: `PENDING → PROCESSING → DONE | FAILED`.
 
 **1.2 Harness**
-- [ ] Switch the harness to run against the full stack: `BASE_URL` for the API
-      and `MAILHOG_URL` for the mail inbox; `TestMain` optionally runs
-      `docker compose up -d --wait` / `down -v` when `BASE_URL` is not set.
-- [ ] Keep: ffmpeg-generated videos, real ZIP/PNG assertions, `notImplemented(t)`.
-- [ ] New helpers: `registerAndLogin(t)` (unique user per test), authenticated
-      client, `uploadVideos(t, token, files...)`, `waitForStatus(t, token, id,
-      want, timeout)` (polling), `mailsFor(t, email)`.
-- [ ] Remove helpers that depend on the reference app's filesystem
-      (`requireReferenceApp`, `resetWorkspace`, `replaceDirWithFile`, …).
+- [x] Switch the harness to run against the full stack: `BASE_URL` for the API
+      and `MAILHOG_URL` for the mail inbox; `TestMain` runs
+      `docker compose up -d --build --wait` / `down -v` (`KEEP_STACK=1` keeps
+      it) when `BASE_URL` is not set and `deploy/docker-compose.yml` exists,
+      then waits for `GET /healthz`.
+- [x] Keep: ffmpeg requirement, `notImplemented(t)`. (Video generation and
+      ZIP/PNG assertions come back in 1.3 with the tests that use them.)
+- [x] Remove helpers that depend on the reference app's filesystem
+      (`requireReferenceApp`, `resetWorkspace`, `replaceDirWithFile`, …) and
+      COVERAGE_OUT support (coverage now comes from unit tests).
+- [x] Delete the legacy tests (`index`, `upload`, `download`, `status`,
+      `static`, `cors`, `startup`, `e2e`): they cannot compile without the old
+      harness. Startup/graceful-shutdown checks move to per-service unit tests
+      in Phase 2. *(Moved here from 1.4.)*
+- [x] `health_test.go` — `/healthz` and `/readyz` (first test of the new suite).
 
 **1.3 Test files (each test starts with `notImplemented(t)`)**
+
+Helpers are added together with the first test that uses them (the `unused`
+linter rejects dead helpers): `registerAndLogin(t)` (unique user per test),
+authenticated client, `uploadVideos(t, token, files...)`, `makeVideo`,
+`waitForStatus(t, token, id, want, timeout)` (polling), `mailsFor(t, email)`,
+error-envelope decoding. Split in two PRs: **1.3a** auth, upload, processing,
+status, download; **1.3b** concurrency, resilience, notification, e2e.
+
 - [ ] `auth_test.go` — register, duplicate, invalid input, login ok/wrong
       password, protected routes return 401 without/with invalid/expired token.
 - [ ] `upload_test.go` — 202 + PENDING job, several files in one request,
@@ -225,15 +239,12 @@ No production code in this phase.
 - [ ] `notification_test.go` — **RF5**: a failed video produces an e-mail to
       the owner (MailHog API) naming the video and the error; a successful one
       does not send a failure mail.
-- [ ] `health_test.go` — `/healthz` and `/readyz`.
 - [ ] `e2e_test.go` — register → login → upload several → poll → list →
       download → failure mail.
 
 **1.4 Clean up**
-- [ ] Delete legacy tests: `index_test.go`, `static_test.go`, `cors_test.go`,
-      `startup_test.go` and the old `upload/status/download/e2e` bodies.
-      (Startup/graceful-shutdown checks move to per-service unit tests in
-      Phase 2.)
+- [ ] Drop the dead coverage plumbing: `make cover`, the CI coverage steps,
+      and the `COVERAGE_OUT` mention in `.golangci.yml`.
 - [ ] Rewrite `tests/integration/README.md` (new contract, how to run against
       compose, status of pending tests) and drop the legacy "Contract notes".
 - [ ] CI still green: gofmt, vet, and the suite with everything skipped.

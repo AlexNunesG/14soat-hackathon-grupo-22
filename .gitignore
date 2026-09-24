@@ -1,2 +1,16 @@
+# Test coverage
 coverage.out
 coverage.txt
+
+# Build and test output
+/bin/
+*.test
+
+# Local secrets (the example file stays tracked)
+.env
+!.env.example
+
+# OS junk (macOS Finder / zip extraction)
+.DS_Store
+._*
+__MACOSX/

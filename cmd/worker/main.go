@@ -21,6 +21,7 @@ import (
 	httpapi "video-processor/internal/adapters/http"
 	"video-processor/internal/adapters/postgres"
 	"video-processor/internal/adapters/rabbitmq"
+	rediscache "video-processor/internal/adapters/redis"
 	"video-processor/internal/adapters/storage"
 	"video-processor/internal/adapters/zip"
 	"video-processor/internal/app"
@@ -78,9 +79,19 @@ func run() error {
 	}
 	defer retries.Close()
 
+	opts := []app.ProcessorOption{app.WithProcessorTempDir(cfg.TempDir), app.WithProcessorLogger(log)}
+	// Every status change invalidates the owner's cached video list
+	// (docs/cache.md), best effort: Redis errors never fail a job.
+	if cfg.Cache.Enabled() {
+		cache, err := rediscache.New(cfg.Cache.URL, cfg.Cache.TTL)
+		if err != nil {
+			return err
+		}
+		defer cache.Close()
+		opts = append(opts, app.WithProcessorListInvalidator(cache))
+	}
 	processor := app.NewProcessor(postgres.NewVideos(db), store,
-		ffmpeg.New(ffmpeg.WithTimeout(cfg.FFmpegTimeout)), zip.New(),
-		app.WithProcessorTempDir(cfg.TempDir), app.WithProcessorLogger(log))
+		ffmpeg.New(ffmpeg.WithTimeout(cfg.FFmpegTimeout)), zip.New(), opts...)
 	consumer, err := rabbitmq.NewConsumer(rabbitmq.ConsumerConfig{
 		URL:             cfg.Broker.URL,
 		Name:            "worker",

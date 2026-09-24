@@ -41,6 +41,8 @@ type Options struct {
 	// UploadTempDir is where uploads are spooled while they are received;
 	// "" means os.TempDir().
 	UploadTempDir string
+	// WebUI serves the web UI at GET / and its assets under /ui/.
+	WebUI bool
 }
 
 func init() {
@@ -76,6 +78,9 @@ func NewRouter(opts Options) http.Handler {
 	videos.POST("", uploadVideos(log, opts.Uploads, maxUpload, opts.UploadTempDir))
 	videos.GET("/:id", getVideo(log, opts.Videos))
 	videos.GET("/:id/download", downloadVideo(log, opts.Videos))
+	if opts.WebUI {
+		mountWebUI(r)
+	}
 	return r
 }
 

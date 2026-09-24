@@ -36,6 +36,7 @@ type Uploads struct {
 	now      func() time.Time
 	newID    func() string
 	enqueued func()
+	lists    ListInvalidator
 }
 
 // UploadsOption customizes Uploads.
@@ -54,6 +55,12 @@ func WithUploadLogger(log *slog.Logger) UploadsOption { return func(u *Uploads) 
 // outbox, e.g. OutboxRelay.Notify, so they are published at once instead of
 // at the relay's next poll.
 func OnEnqueued(f func()) UploadsOption { return func(u *Uploads) { u.enqueued = f } }
+
+// WithUploadListInvalidator sets the cache of video lists to invalidate
+// after every upload (see VideoListCache).
+func WithUploadListInvalidator(inv ListInvalidator) UploadsOption {
+	return func(u *Uploads) { u.lists = inv }
+}
 
 // NewUploads returns the upload use case.
 func NewUploads(repo UploadRepository, storage ObjectStorage, opts ...UploadsOption) *Uploads {
@@ -132,6 +139,7 @@ func (u *Uploads) Upload(ctx context.Context, ownerID string, files []UploadFile
 		u.cleanup(ctx, stored)
 		return nil, fmt.Errorf("create videos: %w", err)
 	}
+	invalidateList(ctx, u.lists, u.log, ownerID)
 	u.enqueued()
 	return videos, nil
 }

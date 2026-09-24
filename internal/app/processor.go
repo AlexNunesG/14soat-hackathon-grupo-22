@@ -34,6 +34,7 @@ type Processor struct {
 	log       *slog.Logger
 	now       func() time.Time
 	newID     func() string
+	lists     ListInvalidator
 }
 
 // ProcessorOption customizes Processor.
@@ -58,6 +59,12 @@ func WithProcessorClock(now func() time.Time) ProcessorOption {
 // WithProcessorIDs sets the generator of the zip keys' unique part.
 func WithProcessorIDs(newID func() string) ProcessorOption {
 	return func(p *Processor) { p.newID = newID }
+}
+
+// WithProcessorListInvalidator sets the cache of video lists to invalidate
+// after every status change (see VideoListCache).
+func WithProcessorListInvalidator(inv ListInvalidator) ProcessorOption {
+	return func(p *Processor) { p.lists = inv }
 }
 
 // NewProcessor returns the processing use case.
@@ -113,7 +120,7 @@ func (p *Processor) GiveUp(ctx context.Context, body []byte, cause error) error 
 	if err != nil {
 		return nil // nothing to record: the message is dead-lettered as is
 	}
-	return p.fail(ctx, msg.VideoID, "processing failed after several attempts: "+cause.Error())
+	return p.fail(ctx, msg.VideoID, "", "processing failed after several attempts: "+cause.Error())
 }
 
 // Process processes the video with the id; see Handle.
@@ -139,6 +146,7 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		log.InfoContext(ctx, "job for a video finished meanwhile ignored")
 		return nil
 	}
+	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 
 	begin := time.Now()
 	log.InfoContext(ctx, "processing video", slog.String("original_name", v.OriginalName))
@@ -147,7 +155,7 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		var perm *permanentError
 		if ctx.Err() == nil && errors.As(err, &perm) {
 			log.InfoContext(ctx, "video cannot be processed", slog.String("reason", perm.reason))
-			return p.fail(ctx, id, perm.reason)
+			return p.fail(ctx, id, v.OwnerID, perm.reason)
 		}
 		return fmt.Errorf("process video %s: %w", id, err)
 	}
@@ -165,19 +173,32 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		log.InfoContext(ctx, "video was finished by another run; result discarded")
 		return nil
 	}
+	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 	log.InfoContext(ctx, "video processed", slog.Int("frames", frames), slog.Duration("duration", time.Since(begin)))
 	return nil
 }
 
-// fail records the video as FAILED with reason.
-func (p *Processor) fail(ctx context.Context, id, reason string) error {
+// fail records the video as FAILED with reason. ownerID is the video's
+// owner, or "" when the caller does not know it.
+func (p *Processor) fail(ctx context.Context, id, ownerID, reason string) error {
 	failed, err := p.repo.MarkFailed(ctx, id, reason, p.timestamp())
 	if err != nil {
 		return fmt.Errorf("mark video %s failed: %w", id, err)
 	}
 	if !failed {
 		p.log.InfoContext(ctx, "video already final; failure not recorded", slog.String("video_id", id))
+		return nil
 	}
+	if ownerID == "" && p.lists != nil {
+		v, err := p.repo.GetByID(ctx, id)
+		if err != nil {
+			p.log.WarnContext(ctx, "could not find the owner of a failed video to invalidate its list",
+				slog.String("video_id", id), slog.Any("error", err))
+			return nil
+		}
+		ownerID = v.OwnerID
+	}
+	invalidateList(ctx, p.lists, p.log, ownerID)
 	return nil
 }
 

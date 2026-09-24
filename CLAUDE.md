@@ -50,7 +50,7 @@ Single Go module (root `go.mod`), one binary per service:
 cmd/{api,worker,notifier}   thin main packages (wiring only)
 internal/domain             entities, JobStatus, format validation
 internal/app                use cases and ports
-internal/adapters/          http, postgres, rabbitmq, storage, ffmpeg, zip, mailer
+internal/adapters/          http (+ web UI), postgres, rabbitmq, redis, storage, auth, ffmpeg, zip, mailer
 internal/platform/          config, logging
 db/migrations/              versioned SQL
 deploy/                     compose, k8s, RabbitMQ definitions

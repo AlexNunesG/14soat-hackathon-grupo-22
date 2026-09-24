@@ -52,6 +52,7 @@ func TestLoadDefaults(t *testing.T) {
 		Auth:             config.Auth{JWTSecret: []byte(testJWTSecret), TokenTTL: time.Hour},
 		Upload:           config.Upload{MaxBytes: 1 << 30},
 		Outbox:           config.Outbox{Interval: time.Second, BatchSize: 100},
+		Cache:            config.Cache{TTL: 30 * time.Second},
 		ReadinessTimeout: 2 * time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
@@ -80,6 +81,8 @@ func TestLoadOverrides(t *testing.T) {
 		"UPLOAD_TEMP_DIR":      "/data/tmp",
 		"OUTBOX_POLL_INTERVAL": "250ms",
 		"OUTBOX_BATCH_SIZE":    "500",
+		"REDIS_URL":            "redis://:pw@cache:6380/2",
+		"CACHE_TTL":            "5s",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +94,8 @@ func TestLoadOverrides(t *testing.T) {
 		cfg.Storage.Region != "sa-east-1" || !cfg.Storage.UseSSL || cfg.ReadinessTimeout != 500*time.Millisecond ||
 		string(cfg.Auth.JWTSecret) != " another-secret-of-32-bytes-or-more " || cfg.Auth.TokenTTL != 15*time.Minute ||
 		cfg.Upload != (config.Upload{MaxBytes: 1 << 20, TempDir: "/data/tmp"}) ||
-		cfg.Outbox != (config.Outbox{Interval: 250 * time.Millisecond, BatchSize: 500}) {
+		cfg.Outbox != (config.Outbox{Interval: 250 * time.Millisecond, BatchSize: 500}) ||
+		cfg.Cache != (config.Cache{URL: "redis://:pw@cache:6380/2", TTL: 5 * time.Second}) || !cfg.Cache.Enabled() {
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 }
@@ -131,6 +135,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{"OUTBOX_POLL_INTERVAL", "1"},
 		{"OUTBOX_BATCH_SIZE", "0"},
 		{"OUTBOX_BATCH_SIZE", "501"},
+		{"REDIS_URL", "http://cache:6379"},
+		{"REDIS_URL", "not a url"},
+		{"CACHE_TTL", "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
@@ -213,6 +220,7 @@ func TestLoadWorker(t *testing.T) {
 			Endpoint: "localhost:8333", AccessKey: testAccessKey, SecretKey: testSecretKey,
 			Bucket: "videos", Region: "us-east-1",
 		},
+		Cache:            config.Cache{TTL: 30 * time.Second},
 		HealthAddr:       ":8081",
 		Concurrency:      2,
 		FFmpegTimeout:    10 * time.Minute,
@@ -230,13 +238,15 @@ func TestLoadWorker(t *testing.T) {
 		"FFMPEG_TIMEOUT":      "90s",
 		"WORKER_TEMP_DIR":     "/scratch",
 		"SHUTDOWN_TIMEOUT":    "1m",
+		"REDIS_URL":           "redis://cache:6379/0",
 		"JWT_SECRET":          "", // the worker does not need it
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.HealthAddr != "127.0.0.1:9000" || cfg.Concurrency != 8 || cfg.MaxAttempts != 2 ||
-		cfg.FFmpegTimeout != 90*time.Second || cfg.TempDir != "/scratch" || cfg.ShutdownTimeout != time.Minute {
+		cfg.FFmpegTimeout != 90*time.Second || cfg.TempDir != "/scratch" || cfg.ShutdownTimeout != time.Minute ||
+		cfg.Cache.URL != "redis://cache:6379/0" {
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 
@@ -246,6 +256,7 @@ func TestLoadWorker(t *testing.T) {
 		"FFMPEG_TIMEOUT":      "soon",
 		"HEALTH_ADDR":         "8081",
 		"AMQP_URL":            "",
+		"REDIS_URL":           "amqp://mq:5672/",
 	} {
 		if _, err := config.LoadWorker(env(map[string]string{key: value})); err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s=%q: err = %v", key, value, err)

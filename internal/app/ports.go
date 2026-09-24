@@ -162,3 +162,32 @@ type OutboxStore interface {
 type MessagePublisher interface {
 	Publish(ctx context.Context, msgs []Message) []error
 }
+
+// VideoListCache caches pages of a user's video list (GET /api/v1/videos,
+// RF4). It is best effort: callers log its errors and fall back to the
+// repository, so an unreachable cache never fails a request or a job.
+//
+// Freshness relies on a per-user version: a page is stored under the
+// version read before the repository was queried, and every change to the
+// user's videos bumps the version (InvalidateList) after it is committed.
+// A page read from the repository concurrently with a change is therefore
+// stored under the old version, which no reader asks for any more.
+type VideoListCache interface {
+	// ListVersion returns the current version of the owner's list.
+	ListVersion(ctx context.Context, ownerID string) (string, error)
+	// GetList returns the page stored for the owner at version, and
+	// whether there was one.
+	GetList(ctx context.Context, ownerID, version string, page Page) (VideoPage, bool, error)
+	// PutList stores the page for the owner at version, for a short time.
+	PutList(ctx context.Context, ownerID, version string, vp VideoPage) error
+	// ListInvalidator is also part of the cache.
+	ListInvalidator
+}
+
+// ListInvalidator makes the cached pages of a user's video list stale.
+// Services that change videos (the api on upload, the worker on every
+// status change) call it after the change is committed.
+type ListInvalidator interface {
+	// InvalidateList bumps the version of the owner's list.
+	InvalidateList(ctx context.Context, ownerID string) error
+}

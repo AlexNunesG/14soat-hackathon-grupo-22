@@ -35,6 +35,8 @@ internal/
     ffmpeg/       frame extractor
     zip/          archiver
     mailer/       SMTP
+    redis/        video-list cache (added in Phase 2.4)
+    auth/         bcrypt + JWT (added in Phase 2.2)
   platform/
     config/       env configuration
     logging/      slog setup, correlation ids

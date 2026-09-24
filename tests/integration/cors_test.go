@@ -1,4 +1,4 @@
-package main
+package integration
 
 // Integration tests for the CORS middleware applied to every route.
 

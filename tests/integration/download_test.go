@@ -1,4 +1,4 @@
-package main
+package integration
 
 // Integration tests for GET /download/:filename
 
@@ -34,14 +34,17 @@ func TestDownloadReturnsGeneratedZip(t *testing.T) {
 			t.Errorf("%s = %q, want %q", h, got, v)
 		}
 	}
-	onDisk, err := os.ReadFile(filepath.Join(workDir, "outputs", result.ZipPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(body, onDisk) {
-		t.Errorf("downloaded zip differs from file on disk")
-	}
 	assertValidZip(t, body, result.Images)
+
+	if usingReferenceApp() {
+		onDisk, err := os.ReadFile(filepath.Join(referenceDir, "outputs", result.ZipPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(body, onDisk) {
+			t.Errorf("downloaded zip differs from file on disk")
+		}
+	}
 }
 
 func TestDownloadUnknownFileReturns404(t *testing.T) {

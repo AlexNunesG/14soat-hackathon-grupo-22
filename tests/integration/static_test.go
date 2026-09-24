@@ -1,12 +1,10 @@
-package main
+package integration
 
 // Integration tests for the static routes GET /uploads/* and GET /outputs/*
 
 import (
 	"bytes"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -32,17 +30,16 @@ func TestStaticOutputsServesGeneratedZip(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /outputs/%s: expected 200, got %d", result.ZipPath, resp.StatusCode)
 	}
-	onDisk, err := os.ReadFile(filepath.Join(workDir, "outputs", result.ZipPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(body, onDisk) {
-		t.Errorf("static zip differs from file on disk")
+	if !bytes.Equal(body, download(t, result.ZipPath)) {
+		t.Errorf("/outputs and /download serve different content")
 	}
 	assertValidZip(t, body, result.Images)
 }
 
+// The name of a kept upload is never returned by the API, so finding it
+// requires the reference app's uploads/ directory.
 func TestStaticUploadsServesKeptUpload(t *testing.T) {
+	requireReferenceApp(t)
 	resetWorkspace(t)
 	content := []byte("this is definitely not a video stream")
 

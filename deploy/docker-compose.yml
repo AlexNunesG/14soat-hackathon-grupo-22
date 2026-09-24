@@ -26,7 +26,9 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -q -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      # Check over TCP: during initialization the image runs a temporary
+      # server on the Unix socket only, which a socket check reports as ready.
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -46,7 +48,7 @@ services:
       start_interval: 1s
 
   # The topology (exchanges, queues, retry and dead-letter queues) is
-  # declared by the api and the worker on connect; the same topology is in
+  # declared by the api, the worker and the notifier on connect; the same topology is in
   # deploy/rabbitmq/definitions.json for manual import.
   rabbitmq:
     image: rabbitmq:4-management-alpine
@@ -220,6 +222,9 @@ services:
       S3_USE_SSL: "false"
       # The worker invalidates the api's list cache on every status change.
       REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
+      # Relay of the video.failed / video.processed events (ADR 0004).
+      OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1s}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
     deploy:
       replicas: ${WORKER_REPLICAS:-2}
     depends_on:
@@ -243,8 +248,52 @@ services:
     # Longer than SHUTDOWN_TIMEOUT, so in-flight jobs can finish.
     stop_grace_period: 20s
 
-  # notifier: arrives with its code in Phase 2.5 (consumes failure events,
-  #   sends e-mail through mailhog:1025).
+  # Failure e-mails (RF5): consumes video.notify (video.failed events) and
+  # sends through MailHog. Production SMTP: set SMTP_HOST, SMTP_PORT,
+  # SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM and SMTP_TLS (starttls or tls).
+  notifier:
+    build:
+      context: ..
+      dockerfile: deploy/docker/notifier.Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-}
+    image: video-processor/notifier:dev
+    environment:
+      HEALTH_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${NOTIFIER_SHUTDOWN_TIMEOUT:-15s}
+      READINESS_TIMEOUT: ${READINESS_TIMEOUT:-2s}
+      NOTIFIER_CONCURRENCY: ${NOTIFIER_CONCURRENCY:-4}
+      NOTIFIER_MAX_ATTEMPTS: ${NOTIFIER_MAX_ATTEMPTS:-0}
+      DATABASE_URL: postgres://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:-video}@postgres:5432/${POSTGRES_DB:-video_processor}?sslmode=disable
+      AMQP_URL: amqp://${RABBITMQ_USER:-video}:${RABBITMQ_PASSWORD:-video}@rabbitmq:5672/
+      SMTP_HOST: ${SMTP_HOST:-mailhog}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: "${SMTP_FROM:-FIAP X Video Processor <no-reply@fiapx.local>}"
+      SMTP_TLS: ${SMTP_TLS:-none}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-30s}
+      # Link to the web UI written in the e-mails.
+      APP_URL: ${APP_URL:-http://localhost:8080}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    # Longer than SHUTDOWN_TIMEOUT, so in-flight e-mails can finish.
+    stop_grace_period: 20s
 
 volumes:
   postgres-data:

@@ -85,17 +85,19 @@ func (r *Videos) MarkProcessing(ctx context.Context, id string, at time.Time) (b
 		WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')`, id, at)
 }
 
-// MarkDone moves a PROCESSING video to DONE and reports whether it did.
-func (r *Videos) MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time) (bool, error) {
-	return r.update(ctx, "mark done", `
+// MarkDone moves a PROCESSING video to DONE and reports whether it did;
+// only then it queues events in the outbox, in the same transaction.
+func (r *Videos) MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time, events ...app.Message) (bool, error) {
+	return r.updateWithEvents(ctx, "mark done", events, `
 		UPDATE videos SET status = 'DONE', zip_key = $2, frame_count = $3, updated_at = $4
 		WHERE id = $1 AND status = 'PROCESSING'`, id, zipKey, frameCount, at)
 }
 
 // MarkFailed moves a PENDING or PROCESSING video to FAILED and reports
-// whether it did.
-func (r *Videos) MarkFailed(ctx context.Context, id, reason string, at time.Time) (bool, error) {
-	return r.update(ctx, "mark failed", `
+// whether it did; only then it queues events in the outbox, in the same
+// transaction.
+func (r *Videos) MarkFailed(ctx context.Context, id, reason string, at time.Time, events ...app.Message) (bool, error) {
+	return r.updateWithEvents(ctx, "mark failed", events, `
 		UPDATE videos SET status = 'FAILED', error_message = $2, updated_at = $3
 		WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')`, id, reason, at)
 }
@@ -111,6 +113,34 @@ func (r *Videos) update(ctx context.Context, op, sql, id string, args ...any) (b
 		return false, fmt.Errorf("postgres: %s: %w", op, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// updateWithEvents is update plus, when the row changed, the events queued
+// in the outbox, all in one transaction (ADR 0004): the run whose UPDATE
+// wins is the only one that records the events.
+func (r *Videos) updateWithEvents(ctx context.Context, op string, events []app.Message, sql, id string, args ...any) (bool, error) {
+	if len(events) == 0 {
+		return r.update(ctx, op, sql, id, args...)
+	}
+	if !validUUID(id) {
+		return false, nil
+	}
+	changed := false
+	err := pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, sql, append([]any{id}, args...)...)
+		if err != nil {
+			return fmt.Errorf("postgres: %s: %w", op, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return nil
+		}
+		changed = true
+		return enqueue(ctx, tx, events)
+	})
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
 }
 
 // GetByIDForOwner returns the owner's video with the id. Unknown and

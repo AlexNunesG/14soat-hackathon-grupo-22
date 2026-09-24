@@ -226,6 +226,7 @@ func TestLoadWorker(t *testing.T) {
 		FFmpegTimeout:    10 * time.Minute,
 		ShutdownTimeout:  15 * time.Second,
 		ReadinessTimeout: 2 * time.Second,
+		Outbox:           config.Outbox{Interval: time.Second, BatchSize: 100},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("defaults:\n got %+v\nwant %+v", cfg, want)
@@ -260,6 +261,79 @@ func TestLoadWorker(t *testing.T) {
 	} {
 		if _, err := config.LoadWorker(env(map[string]string{key: value})); err == nil || !strings.Contains(err.Error(), key) {
 			t.Errorf("%s=%q: err = %v", key, value, err)
+		}
+	}
+}
+
+func TestLoadNotifier(t *testing.T) {
+	cfg, err := config.LoadNotifier(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Notifier{
+		LogLevel: slog.LevelInfo,
+		Database: config.Database{URL: testDatabaseURL},
+		Broker:   config.Broker{URL: testAMQPURL},
+		SMTP: config.SMTP{
+			Host: "localhost", Port: 1025, From: "FIAP X Video Processor <no-reply@fiapx.local>",
+			TLS: "none", Timeout: 30 * time.Second,
+		},
+		AppURL:           "http://localhost:8080",
+		HealthAddr:       ":8081",
+		Concurrency:      4,
+		ShutdownTimeout:  15 * time.Second,
+		ReadinessTimeout: 2 * time.Second,
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("defaults:\n got %+v\nwant %+v", cfg, want)
+	}
+
+	cfg, err = config.LoadNotifier(env(map[string]string{
+		"SMTP_HOST":             "smtp.example.com",
+		"SMTP_PORT":             "587",
+		"SMTP_USERNAME":         "apikey",
+		"SMTP_PASSWORD":         " s3cret ",
+		"SMTP_FROM":             "no-reply@example.com",
+		"SMTP_TLS":              "STARTTLS",
+		"SMTP_TIMEOUT":          "10s",
+		"APP_URL":               "https://videos.example.com",
+		"NOTIFIER_CONCURRENCY":  "8",
+		"NOTIFIER_MAX_ATTEMPTS": "3",
+		"S3_ACCESS_KEY":         "", // the notifier does not need them
+		"S3_SECRET_KEY":         "",
+		"JWT_SECRET":            "",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSMTP := config.SMTP{
+		Host: "smtp.example.com", Port: 587, Username: "apikey", Password: " s3cret ",
+		From: "no-reply@example.com", TLS: "starttls", Timeout: 10 * time.Second,
+	}
+	if cfg.SMTP != wantSMTP || cfg.AppURL != "https://videos.example.com" || cfg.Concurrency != 8 || cfg.MaxAttempts != 3 {
+		t.Errorf("overrides not applied: %+v", cfg)
+	}
+
+	for _, tt := range []struct {
+		env map[string]string
+		key string
+	}{
+		{map[string]string{"SMTP_PORT": "0"}, "SMTP_PORT"},
+		{map[string]string{"SMTP_TLS": "ssl"}, "SMTP_TLS"},
+		{map[string]string{"SMTP_FROM": "not an address"}, "SMTP_FROM"},
+		{map[string]string{"SMTP_USERNAME": "u", "SMTP_PASSWORD": "p"}, "SMTP_TLS"}, // auth needs TLS
+		{map[string]string{"SMTP_PASSWORD": "p", "SMTP_TLS": "tls"}, "SMTP_USERNAME"},
+		{map[string]string{"SMTP_TIMEOUT": "0s"}, "SMTP_TIMEOUT"},
+		{map[string]string{"APP_URL": "ftp://x"}, "APP_URL"},
+		{map[string]string{"NOTIFIER_CONCURRENCY": "0"}, "NOTIFIER_CONCURRENCY"},
+		{map[string]string{"DATABASE_URL": ""}, "DATABASE_URL"},
+	} {
+		_, err := config.LoadNotifier(env(tt.env))
+		if err == nil || !strings.Contains(err.Error(), tt.key) {
+			t.Errorf("%v: err = %v, want %s", tt.env, err, tt.key)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("error leaks the password: %v", err)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"video-processor/internal/app"
+	"video-processor/internal/domain"
 )
 
 // fakeStorage is an in-memory app.ObjectStorage.
@@ -85,3 +86,29 @@ func (s *fakeStorage) keys() []string {
 }
 
 var errBoom = errors.New("boom")
+
+// fakeUserReader is an in-memory app.UserReader holding the test owner.
+type fakeUserReader struct {
+	mu    sync.Mutex
+	users map[string]domain.User
+	err   error
+}
+
+func newFakeUserReader() *fakeUserReader {
+	return &fakeUserReader{users: map[string]domain.User{
+		ownerID: {ID: ownerID, Name: "Ana Souza", Email: "ana@example.com", CreatedAt: fixedNow},
+	}}
+}
+
+func (r *fakeUserReader) GetByID(_ context.Context, id string) (*domain.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return nil, r.err
+	}
+	u, ok := r.users[id]
+	if !ok {
+		return nil, fmt.Errorf("user %s: %w", id, app.ErrNotFound)
+	}
+	return &u, nil
+}

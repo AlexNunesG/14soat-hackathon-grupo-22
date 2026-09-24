@@ -17,6 +17,10 @@ var (
 	// not exist.
 	ErrObjectNotFound = errors.New("object not found")
 
+	// ErrNotRecorded is wrapped by NotificationLog.SendOnce when the
+	// notification was sent but could not be recorded as sent.
+	ErrNotRecorded = errors.New("notification sent but not recorded")
+
 	// ErrUnprocessableVideo is wrapped by FrameExtractor errors caused by the
 	// input itself (undecodable, no video stream, no frames): retrying does
 	// not help, the video should end FAILED.
@@ -136,11 +140,61 @@ type ProcessingRepository interface {
 	// means the video is final (or gone) and must not be processed.
 	MarkProcessing(ctx context.Context, id string, at time.Time) (bool, error)
 	// MarkDone moves a PROCESSING video to DONE with its archive and frame
-	// count, and reports whether it did.
-	MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time) (bool, error)
+	// count, and reports whether it did. Only when it did, it also queues
+	// events in the outbox, in the same transaction (ADR 0004): a status
+	// change and its events are committed together or not at all.
+	MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time, events ...Message) (bool, error)
 	// MarkFailed moves a PENDING or PROCESSING video to FAILED with the
-	// reason, and reports whether it did.
-	MarkFailed(ctx context.Context, id, reason string, at time.Time) (bool, error)
+	// reason, and reports whether it did. Only when it did, it also queues
+	// events in the outbox, in the same transaction.
+	MarkFailed(ctx context.Context, id, reason string, at time.Time, events ...Message) (bool, error)
+}
+
+// UserReader looks users up by id (the worker resolves a video's owner for
+// its events).
+type UserReader interface {
+	// GetByID returns the user with the id, or an error wrapping
+	// ErrNotFound.
+	GetByID(ctx context.Context, id string) (*domain.User, error)
+}
+
+// Mail is a plain-text e-mail to one recipient.
+type Mail struct {
+	// ID identifies the e-mail (the event id); adapters use it for the
+	// Message-ID header.
+	ID      string
+	To      string
+	Subject string
+	// Body is the UTF-8 text of the message, lines separated by "\n".
+	Body string
+}
+
+// Mailer sends e-mails (SMTP in production, MailHog locally).
+type Mailer interface {
+	// Send delivers m to the mail server. An error wrapping ErrPermanent
+	// means the server refused the message for good (e.g. an unknown
+	// recipient); any other error is worth retrying.
+	Send(ctx context.Context, m Mail) error
+}
+
+// SentNotification records one notification that was sent.
+type SentNotification struct {
+	EventID   string
+	VideoID   string
+	Kind      string // the event type, e.g. video.failed
+	Recipient string
+}
+
+// NotificationLog remembers which events were already notified, so a
+// redelivered event does not send a second e-mail.
+type NotificationLog interface {
+	// SendOnce calls send unless n.EventID is already recorded, and records
+	// it when send succeeds. Concurrent calls for the same event are
+	// serialized: the second waits for the first and then skips. It returns
+	// whether send was called and succeeded. If send fails, nothing is
+	// recorded and its error is returned. If send succeeded but recording
+	// failed, it returns true and an error wrapping ErrNotRecorded.
+	SendOnce(ctx context.Context, n SentNotification, send func(ctx context.Context) error) (sent bool, err error)
 }
 
 // PublishFunc publishes msgs and returns one error per message, in order:

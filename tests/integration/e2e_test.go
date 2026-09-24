@@ -13,7 +13,6 @@ import (
 )
 
 func TestEndToEnd(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	// Sign up and log in.
 	user, token := registerAndLogin(t)

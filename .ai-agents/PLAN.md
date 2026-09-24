@@ -323,14 +323,15 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 - [x] Enables: `status_test.go`, `download_test.go` (enabled in 2.3).
 
 **2.5 Notifications (RF5)**
-- [ ] Worker publishes `video.failed` (and `video.processed`) events.
-- [ ] Notifier service consumes and sends e-mail via SMTP (MailHog in compose,
+- [x] Worker publishes `video.failed` (and `video.processed`) events.
+- [x] Notifier service consumes and sends e-mail via SMTP (MailHog in compose,
       real SMTP via env in prod); templated message with video name and reason.
-- [ ] Retry + DLQ for notification failures; unit tests with a fake mailer.
-- [ ] Enables: `notification_test.go`, `e2e_test.go`.
+- [x] Retry + DLQ for notification failures; unit tests with a fake mailer.
+- [x] Enables: `notification_test.go`, `e2e_test.go`.
 
-- [ ] **Exit check:** `grep -rn 'notImplemented(t)$' tests/integration/` is
-      empty and CI is green.
+- [x] **Exit check:** `grep -rn 'notImplemented(t)$' tests/integration/` is
+      empty and CI is green (35/35 integration tests pass against the compose
+      stack). The `notImplemented` helper stays for future tests (lint exclusion).
 
 ### Phase 3 — Observability
 - [ ] Structured logs (`log/slog`, JSON) with request/job correlation id.
@@ -385,12 +386,12 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 
 | Req | Test (Phase 1) | Implementation | Done |
 |---|---|---|---|
-| RF1 Parallel processing | `concurrency_test.go` | 2.3 (queue + worker pool + replicas) | [ ] |
-| RF2 No lost requests on peaks | `resilience_test.go` | 2.3 (durable queue, confirms, ack, DLQ, outbox) + Phase 4 load test | [ ] |
-| RF3 User/password protection | `auth_test.go` | 2.2 (register/login, JWT, ownership checks) | [ ] |
-| RF4 Status listing per user | `status_test.go`, `download_test.go` | 2.4 | [ ] |
-| RF5 Error notification | `notification_test.go` | 2.5 | [ ] |
-| RT1 Persistence | all (state survives across requests) | 2.2 (Postgres) + 2.3 (object storage) | [ ] |
+| RF1 Parallel processing | `concurrency_test.go` | 2.3 (queue + worker pool + replicas) | [x] |
+| RF2 No lost requests on peaks | `resilience_test.go` | 2.3 (durable queue, confirms, ack, DLQ, outbox) + Phase 4 load test | [ ] tests pass; load test pending |
+| RF3 User/password protection | `auth_test.go` | 2.2 (register/login, JWT, ownership checks) | [x] |
+| RF4 Status listing per user | `status_test.go`, `download_test.go` | 2.2–2.4 | [x] |
+| RF5 Error notification | `notification_test.go` | 2.5 | [x] |
+| RT1 Persistence | all (state survives across requests) | 2.2 (Postgres) + 2.3 (object storage) | [x] |
 | RT2 Scalable | `concurrency_test.go` | 2.3 + Phase 4 (stateless services, compose scale, k8s HPA) | [ ] |
 | RT3 GitHub versioning | — | Repo exists; PR-based flow | [x] |
 | RT4 Tests | Phase 1 suite | Phase 2 unit tests + Phase 5 | [ ] |
@@ -409,3 +410,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Added Ground rules: tests are the spec (PDF wins on conflict), avoid changing them, enable them with the feature. |
 | 2026-09-24 | Phase 0 done: ADRs 0001/0002 + CLAUDE.md (#10), Go 1.27 (#11), Makefile + .editorconfig (#12), golangci-lint v2.14.0 (#13), `__MACOSX` cleanup. |
 | 2026-09-24 | Phase 1 done: OpenAPI v1 contract (#15), stack harness + legacy tests removed (#16), 35 v1 tests all skipped (#17, #18; validated against a throwaway fake), README/Makefile/CI cleanup. |
+| 2026-09-24 | Phase 2 done: foundation + compose (#20), persistence/auth (#21), outbox/worker/download (#22), Redis cache + web UI (#23), notifications (2.5). All 35 integration tests enabled and passing. |

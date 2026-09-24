@@ -300,7 +300,7 @@ func (e *processorEnv) cachedProcessor(cache *fakeListCache, log *slog.Logger) *
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return app.NewProcessor(e.repo, e.store, e.extractor, e.archiver,
+	return app.NewProcessor(e.repo, e.users, e.store, e.extractor, e.archiver,
 		app.WithProcessorTempDir(e.tempDir), app.WithProcessorLogger(log),
 		app.WithProcessorIDs(func() string { return "run-1" }),
 		app.WithProcessorListInvalidator(cache))

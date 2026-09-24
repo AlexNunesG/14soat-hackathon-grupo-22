@@ -68,6 +68,12 @@ linters:
       # body bytes; callers only use the response for its status and headers.
       - path: _test\.go
         linters: [bodyclose]
+      # notImplemented (tests/integration/helpers_test.go) is kept for
+      # tests added later, even when every current test is enabled (Phase
+      # 2.5 onward); see tests/integration/README.md.
+      - path: tests/integration/helpers_test\.go
+        linters: [unused]
+        text: "func notImplemented is unused"
 
 formatters:
   enable:

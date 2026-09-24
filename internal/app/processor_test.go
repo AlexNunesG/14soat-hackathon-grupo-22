@@ -25,6 +25,8 @@ type fakeProcessingRepo struct {
 	// beforeDone runs inside MarkDone before the update (to simulate a
 	// concurrent run finishing first).
 	beforeDone func(v *domain.Video)
+	// events holds the events queued with the committed status changes.
+	events []app.Message
 }
 
 func newProcessingRepo(videos ...domain.Video) *fakeProcessingRepo {
@@ -70,7 +72,7 @@ func (r *fakeProcessingRepo) MarkProcessing(_ context.Context, id string, at tim
 	return true, nil
 }
 
-func (r *fakeProcessingRepo) MarkDone(_ context.Context, id, zipKey string, frames int, at time.Time) (bool, error) {
+func (r *fakeProcessingRepo) MarkDone(_ context.Context, id, zipKey string, frames int, at time.Time, events ...app.Message) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.errs["done"]; err != nil {
@@ -84,10 +86,11 @@ func (r *fakeProcessingRepo) MarkDone(_ context.Context, id, zipKey string, fram
 		return false, nil
 	}
 	v.Status, v.ZipKey, v.FrameCount, v.UpdatedAt = domain.StatusDone, zipKey, frames, at
+	r.events = append(r.events, events...)
 	return true, nil
 }
 
-func (r *fakeProcessingRepo) MarkFailed(_ context.Context, id, reason string, at time.Time) (bool, error) {
+func (r *fakeProcessingRepo) MarkFailed(_ context.Context, id, reason string, at time.Time, events ...app.Message) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.errs["failed"]; err != nil {
@@ -98,6 +101,7 @@ func (r *fakeProcessingRepo) MarkFailed(_ context.Context, id, reason string, at
 		return false, nil
 	}
 	v.Status, v.ErrorMessage, v.UpdatedAt = domain.StatusFailed, reason, at
+	r.events = append(r.events, events...)
 	return true, nil
 }
 
@@ -165,6 +169,7 @@ func pendingVideo() domain.Video {
 
 type processorEnv struct {
 	repo      *fakeProcessingRepo
+	users     *fakeUserReader
 	store     *fakeStorage
 	extractor *fakeExtractor
 	archiver  fakeArchiver
@@ -177,6 +182,7 @@ func newProcessorEnv(t *testing.T, videos ...domain.Video) *processorEnv {
 	store.objects[inputKey] = []byte("the video")
 	return &processorEnv{
 		repo:      newProcessingRepo(videos...),
+		users:     newFakeUserReader(),
 		store:     store,
 		extractor: &fakeExtractor{frames: 3},
 		tempDir:   t.TempDir(),
@@ -184,7 +190,7 @@ func newProcessorEnv(t *testing.T, videos ...domain.Video) *processorEnv {
 }
 
 func (e *processorEnv) processor() *app.Processor {
-	return app.NewProcessor(e.repo, e.store, e.extractor, e.archiver,
+	return app.NewProcessor(e.repo, e.users, e.store, e.extractor, e.archiver,
 		app.WithProcessorTempDir(e.tempDir),
 		app.WithProcessorClock(func() time.Time { return fixedNow.Add(time.Minute) }),
 		app.WithProcessorIDs(func() string { return "run-1" }))

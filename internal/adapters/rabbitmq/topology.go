@@ -19,6 +19,8 @@ const (
 	ExchangeVideosDLX = "videos.dlx"
 	// QueueVideoProcess is the workers' queue of processing jobs.
 	QueueVideoProcess = "video.process"
+	// QueueVideoNotify is the notifier's queue of failure events.
+	QueueVideoNotify = "video.notify"
 )
 
 // VideoProcess is the processing work queue: jobs published to "videos"
@@ -31,6 +33,30 @@ var VideoProcess = WorkQueue{
 	DeadLetterExchange: ExchangeVideosDLX,
 	RetryDelays:        []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second},
 }
+
+// VideoNotify is the notification work queue (RF5): video.failed events
+// published to "videos", retried after 10 s, 1 min, 5 min and 15 min (so
+// at most 5 attempts over about 21 minutes, which rides out a mail server
+// restart), then dead-lettered to video.notify.dlq.
+var VideoNotify = WorkQueue{
+	Exchange:           ExchangeVideos,
+	RoutingKey:         app.TopicVideoFailed,
+	Queue:              QueueVideoNotify,
+	DeadLetterExchange: ExchangeVideosDLX,
+	RetryDelays:        []time.Duration{10 * time.Second, time.Minute, 5 * time.Minute, 15 * time.Minute},
+}
+
+// Topology is every work queue of the system, in declaration order. The
+// outbox relays declare all of it, so a message they publish always has
+// its queue, even before its consumer first connects.
+var Topology = []WorkQueue{VideoProcess, VideoNotify}
+
+// UnroutedTopics are routing keys published to "videos" that no queue has
+// to be bound to: events without a consumer yet (video.processed). They
+// are published without the mandatory flag, so the broker confirms and
+// drops them while nobody listens instead of returning them. Every other
+// key is mandatory: losing a job or a failure event is an error.
+var UnroutedTopics = []string{app.TopicVideoProcessed}
 
 // WorkQueue is a durable work queue bound to a topic exchange, with one
 // delay queue per retry and a dead-letter queue:

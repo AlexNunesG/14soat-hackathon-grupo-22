@@ -109,6 +109,9 @@ func run(m *testing.M) int {
 	stack := &composeStack{file: composeFile}
 	if err := stack.up(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// Show why a service failed (e.g. a one-shot migrate exiting)
+		// before the stack and its logs are removed.
+		_ = stack.compose("logs", "--no-color", "--tail=100")
 		stack.down()
 		return 1
 	}

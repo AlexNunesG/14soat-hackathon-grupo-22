@@ -61,6 +61,11 @@ func migrate() error {
 		return err
 	}
 	defer db.Close()
+	// The database may still be starting (compose starts migrate as soon as
+	// postgres reports healthy); wait for it instead of failing the stack.
+	if err := postgres.WaitReady(ctx, db, 60*time.Second, time.Second); err != nil {
+		return err
+	}
 	version, err := postgres.Migrate(ctx, db, migrations.FS, log)
 	if err != nil {
 		return err
@@ -119,8 +124,10 @@ func run() error {
 	}
 
 	// Uploads are recorded with their jobs in the outbox (ADR 0004); the
-	// relay publishes them to RabbitMQ, woken up by every upload.
-	publisher, err := rabbitmq.NewPublisher(cfg.Broker.URL, "api-outbox-relay", rabbitmq.ExchangeVideos, log, rabbitmq.VideoProcess)
+	// relay publishes them to RabbitMQ, woken up by every upload. The
+	// outbox also holds the worker's video events, so the relay publishes
+	// the whole topology (rabbitmq.NewOutboxPublisher).
+	publisher, err := rabbitmq.NewOutboxPublisher(cfg.Broker.URL, "api-outbox-relay", log)
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"video-processor/internal/domain"
 )
@@ -55,4 +59,84 @@ func DecodeVideoUploaded(body []byte) (VideoUploaded, error) {
 		return VideoUploaded{}, fmt.Errorf("%w: %s: video_id is empty", ErrMalformedMessage, TopicVideoUploaded)
 	}
 	return m, nil
+}
+
+// Routing keys of the events the worker records when a video reaches a
+// final status (RF5). They are queued in the outbox in the same
+// transaction as the status change (ADR 0004), so an event exists exactly
+// when its status change was committed.
+const (
+	// TopicVideoFailed announces that a video ended FAILED. The notifier
+	// e-mails its owner.
+	TopicVideoFailed = "video.failed"
+	// TopicVideoProcessed announces that a video ended DONE. No service
+	// consumes it yet; it is published so future consumers (a "your frames
+	// are ready" e-mail, metrics) need no change in the worker.
+	TopicVideoProcessed = "video.processed"
+)
+
+// ErrPermanent is wrapped by handler errors that retrying cannot fix (for
+// example an e-mail address the mail server rejects): consumers
+// dead-letter such messages at once, like malformed ones.
+var ErrPermanent = errors.New("permanent failure")
+
+// VideoEvent is the payload of TopicVideoFailed and TopicVideoProcessed. It
+// is self-contained: a consumer needs no database read to act on it. The
+// owner's e-mail and name are the ones registered when the event occurred.
+type VideoEvent struct {
+	// EventID identifies the event (a UUID); it is also the message id.
+	// Consumers deduplicate redeliveries by it.
+	EventID string `json:"event_id"`
+	// Type is the event's routing key: TopicVideoFailed or
+	// TopicVideoProcessed.
+	Type         string `json:"type"`
+	VideoID      string `json:"video_id"`
+	OwnerID      string `json:"owner_id"`
+	OwnerEmail   string `json:"owner_email"`
+	OwnerName    string `json:"owner_name"`
+	OriginalName string `json:"original_name"`
+	// UploadedAt is when the video was uploaded (its created_at).
+	UploadedAt time.Time `json:"uploaded_at"`
+	// ErrorMessage is the video's error_message (failed only).
+	ErrorMessage string `json:"error_message,omitempty"`
+	// FrameCount is the number of frames extracted (processed only).
+	FrameCount int `json:"frame_count,omitempty"`
+	// OccurredAt is when the video reached its final status.
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// NewVideoEventMessage returns the message carrying e. Its id is the event
+// id and its topic the event type.
+func NewVideoEventMessage(e VideoEvent) (Message, error) {
+	body, err := json.Marshal(e)
+	if err != nil {
+		return Message{}, fmt.Errorf("encode %s event: %w", e.Type, err)
+	}
+	return Message{ID: e.EventID, Topic: e.Type, Body: body}, nil
+}
+
+// DecodeVideoEvent decodes a TopicVideoFailed or TopicVideoProcessed
+// payload. A body that is not such a payload, or lacks the event id, type,
+// video id or owner e-mail, yields an error wrapping ErrMalformedMessage.
+func DecodeVideoEvent(body []byte) (VideoEvent, error) {
+	var e VideoEvent
+	if err := json.Unmarshal(body, &e); err != nil {
+		return VideoEvent{}, fmt.Errorf("%w: video event: %w", ErrMalformedMessage, err)
+	}
+	var missing []string
+	for field, v := range map[string]string{
+		"event_id": e.EventID, "type": e.Type, "video_id": e.VideoID, "owner_email": e.OwnerEmail,
+	} {
+		if strings.TrimSpace(v) == "" {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return VideoEvent{}, fmt.Errorf("%w: video event: empty %s", ErrMalformedMessage, strings.Join(missing, ", "))
+	}
+	if uuid.Validate(e.EventID) != nil || uuid.Validate(e.VideoID) != nil {
+		return VideoEvent{}, fmt.Errorf("%w: video event: event_id and video_id must be UUIDs", ErrMalformedMessage)
+	}
+	return e, nil
 }

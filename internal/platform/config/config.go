@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -94,7 +96,54 @@ type Worker struct {
 	ShutdownTimeout time.Duration
 	// ReadinessTimeout bounds each dependency check of GET /readyz.
 	ReadinessTimeout time.Duration
+	// Outbox configures the relay that publishes the video.failed and
+	// video.processed events the worker records (ADR 0004).
+	Outbox Outbox
 }
+
+// Notifier is the configuration of the notifier service (RF5).
+type Notifier struct {
+	LogLevel slog.Level
+	Database Database
+	Broker   Broker
+	SMTP     SMTP
+	// AppURL is the link to the web UI written in the e-mails (APP_URL).
+	AppURL string
+	// HealthAddr is where GET /healthz and /readyz are served
+	// (HEALTH_ADDR, host:port).
+	HealthAddr string
+	// Concurrency is the number of e-mails sent at the same time, and the
+	// prefetch count (NOTIFIER_CONCURRENCY).
+	Concurrency int
+	// MaxAttempts is how many times an e-mail is tried before its event is
+	// dead-lettered (NOTIFIER_MAX_ATTEMPTS; 0 means as many as the retry
+	// queues allow).
+	MaxAttempts int
+	// ShutdownTimeout is how long in-flight e-mails may finish after
+	// SIGINT/SIGTERM before they are requeued (SHUTDOWN_TIMEOUT).
+	ShutdownTimeout time.Duration
+	// ReadinessTimeout bounds each dependency check of GET /readyz.
+	ReadinessTimeout time.Duration
+}
+
+// SMTP configures the mail server the notifier sends through.
+type SMTP struct {
+	Host string // SMTP_HOST
+	Port int    // SMTP_PORT
+	// Username and Password (SMTP_USERNAME, SMTP_PASSWORD) enable PLAIN
+	// authentication when Username is set; it needs TLS.
+	Username string
+	Password string
+	// From is the sender address (SMTP_FROM), "Name <addr>" or "addr".
+	From string
+	// TLS is none, starttls or tls (SMTP_TLS).
+	TLS string
+	// Timeout bounds the sending of one e-mail (SMTP_TIMEOUT).
+	Timeout time.Duration
+}
+
+// SMTP TLS modes (SMTP_TLS).
+var smtpTLSModes = []string{"none", "starttls", "tls"}
 
 // HTTP configures the API server.
 type HTTP struct {
@@ -162,6 +211,16 @@ var defaults = map[string]string{
 	"WORKER_CONCURRENCY":  "2",
 	"WORKER_MAX_ATTEMPTS": "0",
 	"FFMPEG_TIMEOUT":      "10m",
+
+	"NOTIFIER_CONCURRENCY":  "4",
+	"NOTIFIER_MAX_ATTEMPTS": "0",
+	"APP_URL":               "http://localhost:8080",
+	// Development defaults: MailHog on localhost, no TLS, no auth.
+	"SMTP_HOST":    "localhost",
+	"SMTP_PORT":    "1025",
+	"SMTP_FROM":    "FIAP X Video Processor <no-reply@fiapx.local>",
+	"SMTP_TLS":     "none",
+	"SMTP_TIMEOUT": "30s",
 }
 
 // FromEnv loads the configuration from the process environment.
@@ -176,7 +235,7 @@ func Load(getenv func(string) string) (Config, error) {
 			Addr:            l.addr("HTTP_ADDR"),
 			ShutdownTimeout: l.duration("SHUTDOWN_TIMEOUT"),
 		},
-		LogLevel: l.logLevel("LOG_LEVEL"),
+		LogLevel: l.logLevel(),
 		Database: Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
 		Broker:   Broker{URL: l.url("AMQP_URL", "amqp", "amqps")},
 		Storage: Storage{
@@ -195,10 +254,7 @@ func Load(getenv func(string) string) (Config, error) {
 			MaxBytes: l.int64Between("MAX_UPLOAD_BYTES", 1, 1<<40),
 			TempDir:  l.str("UPLOAD_TEMP_DIR"),
 		},
-		Outbox: Outbox{
-			Interval:  l.duration("OUTBOX_POLL_INTERVAL"),
-			BatchSize: int(l.int64Between("OUTBOX_BATCH_SIZE", 1, 500)),
-		},
+		Outbox:           l.outbox(),
 		Cache:            l.cache(),
 		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
 	}
@@ -216,7 +272,7 @@ func WorkerFromEnv() (Worker, error) { return LoadWorker(os.Getenv) }
 func LoadWorker(getenv func(string) string) (Worker, error) {
 	l := loader{getenv: getenv}
 	cfg := Worker{
-		LogLevel: l.logLevel("LOG_LEVEL"),
+		LogLevel: l.logLevel(),
 		Database: Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
 		Broker:   Broker{URL: l.url("AMQP_URL", "amqp", "amqps")},
 		Storage: Storage{
@@ -235,9 +291,35 @@ func LoadWorker(getenv func(string) string) (Worker, error) {
 		TempDir:          l.str("WORKER_TEMP_DIR"),
 		ShutdownTimeout:  l.duration("SHUTDOWN_TIMEOUT"),
 		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
+		Outbox:           l.outbox(),
 	}
 	if err := errors.Join(l.errs...); err != nil {
 		return Worker{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// NotifierFromEnv loads the notifier configuration from the process
+// environment.
+func NotifierFromEnv() (Notifier, error) { return LoadNotifier(os.Getenv) }
+
+// LoadNotifier is Load for the notifier service.
+func LoadNotifier(getenv func(string) string) (Notifier, error) {
+	l := loader{getenv: getenv}
+	cfg := Notifier{
+		LogLevel:         l.logLevel(),
+		Database:         Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
+		Broker:           Broker{URL: l.url("AMQP_URL", "amqp", "amqps")},
+		SMTP:             l.smtp(),
+		AppURL:           l.url("APP_URL", "http", "https"),
+		HealthAddr:       l.addr("HEALTH_ADDR"),
+		Concurrency:      int(l.int64Between("NOTIFIER_CONCURRENCY", 1, 64)),
+		MaxAttempts:      int(l.int64Between("NOTIFIER_MAX_ATTEMPTS", 0, 100)),
+		ShutdownTimeout:  l.duration("SHUTDOWN_TIMEOUT"),
+		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
+	}
+	if err := errors.Join(l.errs...); err != nil {
+		return Notifier{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
 }
@@ -257,7 +339,7 @@ func MigrateFromEnv() (Migrate, error) { return LoadMigrate(os.Getenv) }
 func LoadMigrate(getenv func(string) string) (Migrate, error) {
 	l := loader{getenv: getenv}
 	cfg := Migrate{
-		LogLevel: l.logLevel("LOG_LEVEL"),
+		LogLevel: l.logLevel(),
 		Database: Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
 	}
 	if err := errors.Join(l.errs...); err != nil {
@@ -350,7 +432,9 @@ func (l *loader) boolean(key string) bool {
 	return b
 }
 
-func (l *loader) logLevel(key string) slog.Level {
+// logLevel reads LOG_LEVEL, shared by every service.
+func (l *loader) logLevel() slog.Level {
+	const key = "LOG_LEVEL"
 	lvl, err := logging.ParseLevel(l.str(key))
 	if err != nil {
 		l.fail(key, "%v", err)
@@ -376,6 +460,40 @@ func (l *loader) url(key string, schemes ...string) string {
 	}
 	l.fail(key, "scheme %q, want one of %s", u.Scheme, strings.Join(schemes, ", "))
 	return v
+}
+
+// outbox reads OUTBOX_POLL_INTERVAL and OUTBOX_BATCH_SIZE.
+func (l *loader) outbox() Outbox {
+	return Outbox{
+		Interval:  l.duration("OUTBOX_POLL_INTERVAL"),
+		BatchSize: int(l.int64Between("OUTBOX_BATCH_SIZE", 1, 500)),
+	}
+}
+
+// smtp reads the SMTP_* variables. SMTP_PASSWORD is never echoed.
+func (l *loader) smtp() SMTP {
+	c := SMTP{
+		Host:     l.required("SMTP_HOST"),
+		Port:     int(l.int64Between("SMTP_PORT", 1, 65535)),
+		Username: l.str("SMTP_USERNAME"),
+		Password: l.getenv("SMTP_PASSWORD"),
+		From:     l.str("SMTP_FROM"),
+		TLS:      strings.ToLower(l.str("SMTP_TLS")),
+		Timeout:  l.duration("SMTP_TIMEOUT"),
+	}
+	if _, err := mail.ParseAddress(c.From); err != nil {
+		l.fail("SMTP_FROM", "%q is not an e-mail address (e.g. Name <no-reply@example.com>)", c.From)
+	}
+	if !slices.Contains(smtpTLSModes, c.TLS) {
+		l.fail("SMTP_TLS", "%q, want one of %s", c.TLS, strings.Join(smtpTLSModes, ", "))
+	}
+	switch {
+	case c.Username != "" && c.TLS == "none":
+		l.fail("SMTP_TLS", "must be starttls or tls when SMTP_USERNAME is set (credentials are never sent in clear text)")
+	case c.Username == "" && c.Password != "":
+		l.fail("SMTP_USERNAME", "is required when SMTP_PASSWORD is set")
+	}
+	return c
 }
 
 // cache reads REDIS_URL (optional) and CACHE_TTL.

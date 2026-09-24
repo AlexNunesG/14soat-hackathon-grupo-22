@@ -1,11 +1,14 @@
 // Command worker is the processing service of the video processor: it
 // consumes the video.process queue, extracts each video's frames with
-// ffmpeg, zips them and records the outcome (RF1). It wires configuration,
-// logging and adapters, and holds no business logic (ADR 0002).
+// ffmpeg, zips them and records the outcome (RF1) with its video.failed or
+// video.processed event, which an outbox relay publishes (RF5, ADR 0004).
+// It wires configuration, logging and adapters, and holds no business
+// logic (ADR 0002).
 //
 // It serves GET /healthz and GET /readyz on HEALTH_ADDR. On SIGINT/SIGTERM
 // it stops taking jobs, lets in-flight ones finish for up to
-// SHUTDOWN_TIMEOUT and requeues the rest.
+// SHUTDOWN_TIMEOUT and requeues the rest, then publishes the events left
+// in the outbox.
 package main
 
 import (
@@ -79,7 +82,22 @@ func run() error {
 	}
 	defer retries.Close()
 
-	opts := []app.ProcessorOption{app.WithProcessorTempDir(cfg.TempDir), app.WithProcessorLogger(log)}
+	// Final status changes queue their events in the outbox (ADR 0004); the
+	// relay publishes them, woken up by every event. It may also publish
+	// rows queued by the api, and vice versa: every relay publishes the
+	// whole topology.
+	events, err := rabbitmq.NewOutboxPublisher(cfg.Broker.URL, "worker-outbox-relay-"+host, log)
+	if err != nil {
+		return err
+	}
+	defer events.Close()
+	relay := app.NewOutboxRelay(postgres.NewOutbox(db), events, log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
+
+	opts := []app.ProcessorOption{
+		app.WithProcessorTempDir(cfg.TempDir),
+		app.WithProcessorLogger(log),
+		app.OnEvent(relay.Notify),
+	}
 	// Every status change invalidates the owner's cached video list
 	// (docs/cache.md), best effort: Redis errors never fail a job.
 	if cfg.Cache.Enabled() {
@@ -90,7 +108,7 @@ func run() error {
 		defer cache.Close()
 		opts = append(opts, app.WithProcessorListInvalidator(cache))
 	}
-	processor := app.NewProcessor(postgres.NewVideos(db), store,
+	processor := app.NewProcessor(postgres.NewVideos(db), postgres.NewUsers(db), store,
 		ffmpeg.New(ffmpeg.WithTimeout(cfg.FFmpegTimeout)), zip.New(), opts...)
 	consumer, err := rabbitmq.NewConsumer(rabbitmq.ConsumerConfig{
 		URL:             cfg.Broker.URL,
@@ -121,6 +139,19 @@ func run() error {
 			stop() // a worker without probes would look dead: shut down
 		}
 		healthErr <- err
+	}()
+
+	// The relay outlives the consumer, so the events of the last jobs are
+	// published before the process exits.
+	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		relay.Run(relayCtx)
+	}()
+	defer func() {
+		stopRelay()
+		<-relayDone
 	}()
 
 	log.Info("worker started", slog.Int("concurrency", cfg.Concurrency), slog.String("health_addr", ln.Addr().String()))

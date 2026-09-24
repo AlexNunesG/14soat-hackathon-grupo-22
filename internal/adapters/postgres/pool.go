@@ -27,3 +27,28 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
+
+// Pinger is the part of a connection pool WaitReady needs.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// WaitReady pings db every interval until it answers or timeout elapses,
+// and returns the last error on timeout. It lets one-shot commands such as
+// `api migrate` start while the database is still coming up (for example
+// while the postgres image runs its initialization server).
+func WaitReady(ctx context.Context, db Pinger, timeout, interval time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		err := db.Ping(ctx)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("postgres: not ready after %s: %w", timeout, err)
+		case <-time.After(interval):
+		}
+	}
+}

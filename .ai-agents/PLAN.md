@@ -165,7 +165,7 @@ at the top of this plan.
       (latest stable); gin dropped from `go.mod` until code imports it
       (gin ≥ v1.12 is compatible). Linter versions are pinned in the lint step.
 - [x] Add `Makefile` (`make lint test up down`; `make check` before pushing) and `.editorconfig`.
-- [ ] Add `golangci-lint` config and run it in CI.
+- [x] Add `golangci-lint` config and run it in CI (v2.14.0 pinned in `Makefile` and `ci.yml`; `make tools` installs it).
 - [ ] Remove the stray `__MACOSX/` folder and add it to `.gitignore`.
 
 ### Phase 1 — Rebuild the integration tests for the new behavior (tests first)

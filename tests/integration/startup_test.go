@@ -69,11 +69,11 @@ func TestStartupDefaultsToPort8080(t *testing.T) {
 			}
 			return
 		case <-deadline:
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 			t.Fatalf("app neither started nor failed within 30s:\n%s", output.String())
 		case <-time.After(50 * time.Millisecond):
 			if strings.Contains(output.String(), "Servidor iniciado na porta 8080") {
-				cmd.Process.Signal(syscall.SIGTERM)
+				_ = cmd.Process.Signal(syscall.SIGTERM)
 				if err := <-done; err != nil {
 					t.Errorf("expected a clean exit after SIGTERM, got %v", err)
 				}
@@ -97,7 +97,7 @@ func TestShutdownIsGracefulOnSIGTERM(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cmd.Process.Kill() })
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 
 	deadline := time.Now().Add(30 * time.Second)
 	for !strings.Contains(output.String(), "Servidor iniciado na porta "+port) {
@@ -138,7 +138,7 @@ func runWithTimeout(t *testing.T, cmd *exec.Cmd, timeout time.Duration) (string,
 	case err := <-done:
 		return output.String(), err
 	case <-time.After(timeout):
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		<-done
 		t.Fatalf("app did not exit within %s:\n%s", timeout, output.String())
 		return "", nil

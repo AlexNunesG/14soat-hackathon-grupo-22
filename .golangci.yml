@@ -1,0 +1,79 @@
+# golangci-lint v2 configuration.
+# Version is pinned in the Makefile (GOLANGCI_LINT_VERSION) and in
+# .github/workflows/ci.yml; keep both in sync.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    gosec:
+      excludes:
+        # G104 (unhandled errors) duplicates errcheck, which already honors
+        # the std-error-handling exclusions (e.g. deferred Close).
+        - G104
+    misspell:
+      locale: US
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      # Test harness patterns: tests build and run the app and ffmpeg with
+      # computed arguments, some from env such as COVERAGE_OUT (G204,
+      # G702), read files they just generated (G304) and
+      # create world-readable fixtures in temp dirs (G301, G306).
+      - path: _test\.go
+        linters: [gosec]
+        text: "G(204|301|304|306|702):"
+      # Tests talk to a local server; a context per request adds nothing.
+      - path: _test\.go
+        linters: [noctx]
+      # False positive: the get() helper reads and closes the body before
+      # returning the *http.Response, which callers only use for its status
+      # and headers.
+      - path: _test\.go
+        linters: [bodyclose]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - video-processor

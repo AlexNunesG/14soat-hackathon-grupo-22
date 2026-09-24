@@ -68,5 +68,6 @@ Run `make check` (`make help` lists all targets). It is equivalent to:
 ```sh
 gofmt -l .            # must print nothing
 go vet ./...
+golangci-lint run ./...  # pinned version: make tools
 go test -race ./...   # needs ffmpeg in PATH
 ```

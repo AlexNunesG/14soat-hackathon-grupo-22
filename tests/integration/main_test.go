@@ -18,7 +18,8 @@
 //     the reference implementation's filesystem layout are skipped.
 //
 // Set COVERAGE_OUT=coverage.out (default mode only) to build the app with
-// coverage instrumentation and write a profile for `go tool cover`.
+// coverage instrumentation and write a profile for `go tool cover`. A
+// relative path is resolved against the module root.
 //
 // Requirements: ffmpeg in PATH (used to generate the test videos).
 package integration
@@ -84,6 +85,7 @@ func run(m *testing.M) int {
 }
 
 type referenceApp struct {
+	root     string
 	bin      string
 	port     string
 	cmd      *exec.Cmd
@@ -108,6 +110,7 @@ func startReferenceApp() (*referenceApp, error) {
 		return fail(err)
 	}
 	moduleRoot = filepath.Dir(moduleRoot)
+	app.root = moduleRoot
 
 	bin := filepath.Join(tmp, "app")
 	args := []string{"build", "-o", bin}
@@ -194,10 +197,9 @@ func (a *referenceApp) stop() error {
 
 	if out := os.Getenv("COVERAGE_OUT"); out != "" {
 		if !filepath.IsAbs(out) {
-			// Relative paths are resolved against the directory `go test` was run from.
-			if wd := os.Getenv("PWD"); wd != "" {
-				out = filepath.Join(wd, out)
-			}
+			// `go test` runs in the package directory, so resolve relative
+			// paths against the module root for a predictable location.
+			out = filepath.Join(a.root, out)
 		}
 		cmd := exec.Command("go", "tool", "covdata", "textfmt", "-i="+a.coverDir, "-o="+out)
 		if output, err := cmd.CombinedOutput(); err != nil {

@@ -1,0 +1,795 @@
+openapi: 3.1.0
+
+info:
+  title: FIAP X Video Processor API
+  version: 1.0.0
+  summary: Upload videos, process them asynchronously and download their frames as a zip.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    v1 HTTP contract of the FIAP X Video Processor (SOAT Phase 5 hackathon).
+    The black-box integration suite in `tests/integration/` asserts exactly
+    this file (see `.ai-agents/PLAN.md`, Ground rules, and ADR 0001).
+
+    ## Conventions
+
+    - All routes live under `/api/v1`, except the probes `/healthz` and
+      `/readyz`.
+    - Request and response bodies are JSON (`application/json`), except the
+      upload (`multipart/form-data`) and the download (`application/zip`).
+    - Timestamps are RFC 3339 strings in UTC (e.g. `2026-09-24T12:00:00Z`).
+    - Every `/api/v1/videos*` route requires `Authorization: Bearer <JWT>`,
+      obtained from `POST /api/v1/auth/login`. A missing, malformed, expired
+      or badly signed token yields `401` with code `unauthorized`.
+    - A user only ever sees their own videos. Another user's video is
+      reported as `404 not_found`, never `403`, so its existence is not
+      leaked.
+    - CORS is not part of this contract (the web UI is served same-origin).
+
+    ## Errors
+
+    Every `4xx`/`5xx` response has the body
+    `{"error": {"code": "<code>", "message": "<human readable text>"}}`.
+    Clients must branch on `code`; `message` is for humans and may change.
+
+    | code | HTTP | meaning |
+    |---|---|---|
+    | `invalid_request` | 400 | Malformed body, invalid field or invalid query parameter. |
+    | `missing_file` | 400 | Upload without a `videos` field or with no files in it. |
+    | `unsupported_format` | 400 | At least one uploaded file has an unsupported extension. |
+    | `invalid_credentials` | 401 | Login with unknown e-mail or wrong password (same response for both). |
+    | `unauthorized` | 401 | Missing, malformed, expired or badly signed bearer token. |
+    | `not_found` | 404 | Unknown id, malformed id, or a video owned by another user. |
+    | `email_taken` | 409 | Registration with an e-mail that already exists (case-insensitive). |
+    | `video_not_ready` | 409 | Download requested for a video that is not `DONE`. |
+    | `payload_too_large` | 413 | Upload request larger than the configured limit. |
+    | `internal` | 500 | Unexpected server error. |
+
+    ## Processing semantics
+
+    Uploads are accepted immediately (`202`) and processed asynchronously
+    through a durable queue by one or more workers. A video moves through
+    `PENDING → PROCESSING → DONE | FAILED`; `DONE` and `FAILED` are final.
+
+    - The upload endpoint validates only the file **extension**. The content
+      is validated by the worker: a corrupt file is accepted with `202` and
+      later ends `FAILED`.
+    - Frames are extracted with ffmpeg at **1 frame per second** as PNG
+      images. A video of *N* whole seconds yields *N* frames.
+    - The zip holds the frames at its root, named `frame_0001.png`,
+      `frame_0002.png`, … (4-digit, 1-based, consecutive), and nothing else.
+      `frame_count` equals the number of entries in the zip.
+    - A file that ffmpeg cannot decode, that has no video stream (e.g. an
+      audio-only file), or that yields zero frames ends `FAILED` with a
+      non-empty `error_message`, `frame_count: null` and no zip.
+
+    ## Failure notification (RF5)
+
+    When a video ends `FAILED`, its owner receives an e-mail at the address
+    used to register. The **subject contains the original file name** of the
+    video and the **body contains the error message** (the same text as the
+    video's `error_message`). Videos that end `DONE` do not trigger a failure
+    e-mail. This is a side effect of processing, not an HTTP endpoint.
+  x-processing:
+    fps: 1
+    frame_format: png
+    zip_entry_pattern: '^frame_\d{4}\.png$'
+    statuses: [PENDING, PROCESSING, DONE, FAILED]
+    final_statuses: [DONE, FAILED]
+    failure_notification:
+      channel: email
+      subject_contains: original_name
+      body_contains: error_message
+
+servers:
+  - url: /
+    description: Same origin as the API (locally the compose stack at http://localhost:8080)
+
+tags:
+  - name: auth
+    description: Sign-up and login (RF3).
+  - name: videos
+    description: Upload, status listing and download of videos (RF1, RF2, RF4).
+  - name: health
+    description: Liveness and readiness probes.
+
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Create a user account
+      description: |
+        Creates a user. The e-mail is unique case-insensitively and is stored
+        lowercased. The password is stored only as a hash and is never
+        returned.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              name: Ada Lovelace
+              email: Ada@Example.com
+              password: correct-horse-battery
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 0b8f6a2e-4c1d-4f7a-9e3b-2d5c8a1f6e90
+                name: Ada Lovelace
+                email: ada@example.com
+                created_at: '2026-09-24T12:00:00Z'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '409':
+          description: The e-mail is already registered (case-insensitive).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: email_taken
+                  message: e-mail is already registered
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Exchange e-mail and password for an access token
+      description: |
+        Returns a JWT to be sent as `Authorization: Bearer <access_token>`.
+        The e-mail is matched case-insensitively. Unknown e-mail and wrong
+        password produce the same `401 invalid_credentials` response.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: ada@example.com
+              password: correct-horse-battery
+      responses:
+        '200':
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Token'
+              example:
+                access_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwYjhmNmEyZSJ9.c2lnbmF0dXJl
+                token_type: Bearer
+                expires_in: 3600
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          description: Unknown e-mail or wrong password.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: invalid_credentials
+                  message: invalid e-mail or password
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /api/v1/videos:
+    post:
+      tags: [videos]
+      operationId: uploadVideos
+      summary: Upload one or more videos for processing
+      description: |
+        Accepts one or more files in the multipart field `videos` and creates
+        one video per file with status `PENDING`. Processing happens
+        asynchronously (see *Processing semantics*).
+
+        Supported extensions, case-insensitive: `mp4`, `avi`, `mov`, `mkv`,
+        `wmv`, `flv`, `webm`. The extension is the text after the last `.` of
+        the file name; a name without an extension (e.g. `clip`) or with any
+        other final extension (e.g. `clip.mp4.exe`) is unsupported.
+
+        The request is all-or-nothing: if **any** file has an unsupported
+        extension, the response is `400 unsupported_format`, its message lists
+        all seven supported formats, and no video is created.
+
+        The request size limit is configurable (default 1 GiB per request);
+        a larger request yields `413 payload_too_large` and creates nothing.
+
+        The response lists the created videos in upload order. A `202` means
+        the job is durably queued and will not be lost (RF2).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadRequest'
+            encoding:
+              videos:
+                contentType: application/octet-stream
+      responses:
+        '202':
+          description: Videos accepted and queued, in upload order, all `PENDING`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+              example:
+                videos:
+                  - id: 7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d
+                    original_name: holiday.mp4
+                    status: PENDING
+                    frame_count: null
+                    error_message: null
+                    created_at: '2026-09-24T12:00:00Z'
+                    updated_at: '2026-09-24T12:00:00Z'
+                  - id: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                    original_name: Trip.MKV
+                    status: PENDING
+                    frame_count: null
+                    error_message: null
+                    created_at: '2026-09-24T12:00:00Z'
+                    updated_at: '2026-09-24T12:00:00Z'
+        '400':
+          description: |
+            `missing_file` when the `videos` field is absent or holds no file
+            (including a non-multipart body); `unsupported_format` when any
+            file has an unsupported extension.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                missing_file:
+                  summary: No file in the `videos` field
+                  value:
+                    error:
+                      code: missing_file
+                      message: 'no file sent in multipart field "videos"'
+                unsupported_format:
+                  summary: At least one file has an unsupported extension
+                  value:
+                    error:
+                      code: unsupported_format
+                      message: 'unsupported file format "notes.txt"; supported formats: mp4, avi, mov, mkv, wmv, flv, webm'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: The request exceeds the configured upload limit (default 1 GiB).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: payload_too_large
+                  message: request body exceeds the limit of 1073741824 bytes
+        '500':
+          $ref: '#/components/responses/Internal'
+
+    get:
+      tags: [videos]
+      operationId: listVideos
+      summary: List the caller's videos
+      description: |
+        Returns only the caller's videos, newest first (`created_at`
+        descending, `id` descending as tiebreak). Invalid `page` or
+        `page_size` (non-integer or out of range) yields
+        `400 invalid_request`. A page past the end returns an empty `items`
+        array with the real `total`.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: 1-based page number.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          description: Items per page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: One page of the caller's videos.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoPage'
+              example:
+                items:
+                  - id: 7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d
+                    original_name: holiday.mp4
+                    status: DONE
+                    frame_count: 12
+                    error_message: null
+                    created_at: '2026-09-24T12:05:00Z'
+                    updated_at: '2026-09-24T12:05:09Z'
+                    download_url: /api/v1/videos/7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d/download
+                  - id: 5c4b3a29-1807-4f6e-9d5c-4b3a29180706
+                    original_name: broken.avi
+                    status: FAILED
+                    frame_count: null
+                    error_message: 'ffmpeg: invalid data found when processing input'
+                    created_at: '2026-09-24T12:00:00Z'
+                    updated_at: '2026-09-24T12:00:03Z'
+                page: 1
+                page_size: 20
+                total: 2
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /api/v1/videos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [videos]
+      operationId: getVideo
+      summary: Get one of the caller's videos
+      responses:
+        '200':
+          description: The video.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Video'
+              examples:
+                processing:
+                  summary: Being processed
+                  value:
+                    id: 7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d
+                    original_name: holiday.mp4
+                    status: PROCESSING
+                    frame_count: null
+                    error_message: null
+                    created_at: '2026-09-24T12:05:00Z'
+                    updated_at: '2026-09-24T12:05:01Z'
+                done:
+                  summary: Finished
+                  value:
+                    id: 7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d
+                    original_name: holiday.mp4
+                    status: DONE
+                    frame_count: 12
+                    error_message: null
+                    created_at: '2026-09-24T12:05:00Z'
+                    updated_at: '2026-09-24T12:05:09Z'
+                    download_url: /api/v1/videos/7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d/download
+                failed:
+                  summary: Failed
+                  value:
+                    id: 5c4b3a29-1807-4f6e-9d5c-4b3a29180706
+                    original_name: audio.mp4
+                    status: FAILED
+                    frame_count: null
+                    error_message: 'no video stream found in input'
+                    created_at: '2026-09-24T12:00:00Z'
+                    updated_at: '2026-09-24T12:00:02Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /api/v1/videos/{id}/download:
+    parameters:
+      - $ref: '#/components/parameters/VideoId'
+    get:
+      tags: [videos]
+      operationId: downloadVideoFrames
+      summary: Download the zip with the video's frames
+      description: |
+        Streams the zip of a `DONE` video. The zip holds `frame_0001.png`,
+        `frame_0002.png`, … at its root, one per second of video, and
+        `frame_count` entries in total. The file name is the original name
+        without its extension plus `_frames.zip` (e.g. `holiday.mp4` →
+        `holiday_frames.zip`).
+
+        A video that is `PENDING`, `PROCESSING` or `FAILED` yields
+        `409 video_not_ready`, with its current status in the message.
+      responses:
+        '200':
+          description: The frames archive.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="<original name without extension>_frames.zip"`'
+              required: true
+              schema:
+                type: string
+              example: attachment; filename="holiday_frames.zip"
+          content:
+            application/zip:
+              schema:
+                type: string
+                contentMediaType: application/zip
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The video is not `DONE` (it is `PENDING`, `PROCESSING` or `FAILED`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                processing:
+                  summary: Still processing
+                  value:
+                    error:
+                      code: video_not_ready
+                      message: 'video is not ready for download (status: PROCESSING)'
+                failed:
+                  summary: Processing failed
+                  value:
+                    error:
+                      code: video_not_ready
+                      message: 'video is not ready for download (status: FAILED)'
+        '500':
+          $ref: '#/components/responses/Internal'
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: liveness
+      summary: Liveness probe
+      description: Returns 200 while the process is up. Does not check dependencies.
+      security: []
+      responses:
+        '200':
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liveness'
+              example:
+                status: ok
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readiness
+      summary: Readiness probe
+      description: |
+        Checks the API's dependencies: database (PostgreSQL), broker
+        (RabbitMQ) and storage (MinIO/S3). Returns 200 when all are `ok`, and
+        503 when any is not, with the failing checks marked `error`.
+      security: []
+      responses:
+        '200':
+          description: All dependencies are reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+              example:
+                status: ok
+                checks:
+                  database: ok
+                  broker: ok
+                  storage: ok
+        '503':
+          description: At least one dependency is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+              example:
+                status: error
+                checks:
+                  database: ok
+                  broker: error
+                  storage: ok
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT from `POST /api/v1/auth/login`, valid for `expires_in` seconds.
+        Missing, malformed, expired or badly signed tokens yield
+        `401 unauthorized`.
+
+  parameters:
+    VideoId:
+      name: id
+      in: path
+      required: true
+      description: |
+        Video id (UUID). A malformed id yields `404 not_found`, like an
+        unknown id or another user's video.
+      schema:
+        type: string
+      example: 7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d
+
+  responses:
+    InvalidRequest:
+      description: Malformed body or invalid field / query parameter.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: invalid_request
+              message: 'password: must have at least 8 characters'
+    Unauthorized:
+      description: Missing, malformed, expired or badly signed bearer token.
+      headers:
+        WWW-Authenticate:
+          description: Bearer challenge.
+          schema:
+            type: string
+          example: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unauthorized
+              message: missing or invalid bearer token
+    NotFound:
+      description: Unknown or malformed id, or a video owned by another user.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: not_found
+              message: video not found
+    Internal:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: internal
+              message: internal server error
+
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - invalid_credentials
+        - unauthorized
+        - email_taken
+        - unsupported_format
+        - missing_file
+        - not_found
+        - video_not_ready
+        - payload_too_large
+        - internal
+
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              minLength: 1
+              description: Human-readable description; may change, do not parse.
+      example:
+        error:
+          code: not_found
+          message: video not found
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          description: Unique case-insensitively; stored lowercased.
+        password:
+          type: string
+          format: password
+          minLength: 8
+          writeOnly: true
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+
+    User:
+      type: object
+      required: [id, name, email, created_at]
+      additionalProperties: false
+      description: A user. Never includes the password or its hash.
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+          description: Lowercased.
+        created_at:
+          type: string
+          format: date-time
+
+    Token:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: JWT.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+          description: Lifetime of the token in seconds.
+
+    UploadRequest:
+      type: object
+      required: [videos]
+      properties:
+        videos:
+          type: array
+          minItems: 1
+          description: One or more video files (repeat the `videos` part).
+          items:
+            type: string
+            contentMediaType: application/octet-stream
+
+    UploadResponse:
+      type: object
+      required: [videos]
+      properties:
+        videos:
+          type: array
+          minItems: 1
+          description: Created videos, in upload order, all with status `PENDING`.
+          items:
+            $ref: '#/components/schemas/Video'
+
+    VideoStatus:
+      type: string
+      enum: [PENDING, PROCESSING, DONE, FAILED]
+      description: |
+        `PENDING → PROCESSING → DONE | FAILED`. `DONE` and `FAILED` are final.
+
+    Video:
+      type: object
+      required:
+        - id
+        - original_name
+        - status
+        - frame_count
+        - error_message
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        original_name:
+          type: string
+          description: File name as uploaded (including extension and case).
+        status:
+          $ref: '#/components/schemas/VideoStatus'
+        frame_count:
+          type: [integer, 'null']
+          minimum: 1
+          description: Number of extracted frames (= zip entries); `null` until `DONE`.
+        error_message:
+          type: [string, 'null']
+          minLength: 1
+          description: Why processing failed; non-empty when `FAILED`, `null` otherwise.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        download_url:
+          type: string
+          description: Present only when `DONE`; equals `/api/v1/videos/{id}/download`.
+          example: /api/v1/videos/7d9f1c2a-3b4e-4f5a-8c6d-9e0f1a2b3c4d/download
+
+    VideoPage:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Video'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          minimum: 0
+          description: Total number of the caller's videos.
+
+    CheckStatus:
+      type: string
+      enum: [ok, error]
+
+    Liveness:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          $ref: '#/components/schemas/CheckStatus'
+        checks:
+          type: object
+          required: [database, broker, storage]
+          properties:
+            database:
+              $ref: '#/components/schemas/CheckStatus'
+            broker:
+              $ref: '#/components/schemas/CheckStatus'
+            storage:
+              $ref: '#/components/schemas/CheckStatus'

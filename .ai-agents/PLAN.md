@@ -174,9 +174,10 @@ Goal: a black-box suite that defines the v1 contract before any code exists.
 No production code in this phase.
 
 **1.1 Contract**
-- [ ] Write the v1 contract in `docs/openapi.yaml` (routes, payloads, status
-      codes, error format). The tests assert exactly this file.
-- [ ] Contract summary to cover:
+- [x] Write the v1 contract in [`docs/openapi.yaml`](../docs/openapi.yaml)
+      (routes, payloads, status codes, error format
+      `{"error":{"code","message"}}`). The tests assert exactly this file.
+- [x] Contract summary to cover:
   - `POST /api/v1/auth/register` → 201; 409 duplicate e-mail; 400 invalid input.
   - `POST /api/v1/auth/login` → 200 `{token}`; 401 wrong credentials.
   - `POST /api/v1/videos` (multipart, one or more `videos` files, Bearer

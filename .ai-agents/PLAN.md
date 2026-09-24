@@ -150,7 +150,7 @@ at the top of this plan.
 
 - [x] Record this decision in [`docs/adr/0001-replace-legacy-test-contract.md`](../docs/adr/0001-replace-legacy-test-contract.md).
 - [x] Copy the Ground rules into [`CLAUDE.md`](../CLAUDE.md).
-- [ ] Copy the Ground rules into `tests/integration/README.md` (Phase 1.4).
+- [x] Copy the Ground rules into `tests/integration/README.md` (Phase 1.4).
 
 ---
 
@@ -243,14 +243,14 @@ status, download; **1.3b** concurrency, resilience, notification, e2e.
       download → failure mail.
 
 **1.4 Clean up**
-- [ ] `make tools`: build golangci-lint with the module's Go toolchain
+- [x] `make tools`: build golangci-lint with the module's Go toolchain
       (`GOTOOLCHAIN=go1.27.x`); a plain `go install` may pick an older Go that
       cannot lint a Go 1.27 module.
-- [ ] Drop the dead coverage plumbing: `make cover`, the CI coverage steps,
+- [x] Drop the dead coverage plumbing: `make cover`, the CI coverage steps,
       and the `COVERAGE_OUT` mention in `.golangci.yml`.
-- [ ] Rewrite `tests/integration/README.md` (new contract, how to run against
+- [x] Rewrite `tests/integration/README.md` (new contract, how to run against
       compose, status of pending tests) and drop the legacy "Contract notes".
-- [ ] CI still green: gofmt, vet, and the suite with everything skipped.
+- [x] CI still green: gofmt, vet, golangci-lint, and the suite with everything skipped.
 
 ### Phase 2 — Implement the new behavior (until every test is enabled)
 
@@ -260,9 +260,13 @@ every test it makes pass and tick the items here. If a test contradicts the
 challenge PDF, fix the test first in a separate PR (Ground rule 2).
 
 **2.1 Foundation**
-- [ ] `docker-compose.yml` with the infra the tests need: postgres, redis,
-      rabbitmq (management), minio, mailhog. `.env.example`, no secrets
-      committed.
+- [ ] `deploy/docker-compose.yml` with the infra the tests need: postgres,
+      redis, rabbitmq (management), minio, mailhog. `.env.example`, no secrets
+      committed. Note: once this file exists, `go test ./...` (and CI) starts
+      the stack with `docker compose up --build --wait` and waits for
+      `/healthz`, so the api service must exist and be healthy from this PR
+      on. The stack must provide ≥2 processing slots, a `worker` service,
+      API on :8080 and MailHog on :8025 (see `tests/integration/README.md`).
 - [ ] Domain package: `User`, `Video`/`Job`, `JobStatus`, supported-format
       validation.
 - [ ] Ports + adapters: `FrameExtractor` (ffmpeg, context + timeout, stderr
@@ -391,3 +395,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | §5 decided: Phase 1 rebuilds the tests for the new behavior, Phase 2 implements it. Phases renumbered. |
 | 2026-09-24 | Added Ground rules: tests are the spec (PDF wins on conflict), avoid changing them, enable them with the feature. |
 | 2026-09-24 | Phase 0 done: ADRs 0001/0002 + CLAUDE.md (#10), Go 1.27 (#11), Makefile + .editorconfig (#12), golangci-lint v2.14.0 (#13), `__MACOSX` cleanup. |
+| 2026-09-24 | Phase 1 done: OpenAPI v1 contract (#15), stack harness + legacy tests removed (#16), 35 v1 tests all skipped (#17, #18; validated against a throwaway fake), README/Makefile/CI cleanup. |

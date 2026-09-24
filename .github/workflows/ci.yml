@@ -53,27 +53,4 @@ jobs:
           version: v2.14.0
 
       - name: Integration tests
-        env:
-          COVERAGE_OUT: coverage.out
         run: go test -v -race -count=1 ./...
-
-      - name: Coverage summary
-        if: always() && hashFiles('coverage.out') != ''
-        run: |
-          go tool cover -func=coverage.out | tee coverage.txt
-          {
-            echo "### Coverage"
-            echo
-            echo '```'
-            cat coverage.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload coverage
-        if: always() && hashFiles('coverage.out') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: |
-            coverage.out
-            coverage.txt

@@ -12,14 +12,18 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 
 .DEFAULT_GOAL := help
 
-.PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration cover build \
+.PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
 	up down logs compose-file check clean
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-tools: ## Install the pinned golangci-lint into GOBIN (or GOPATH/bin)
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+# `go env GOVERSION` run here resolves the toolchain go.mod asks for (with
+# the default GOTOOLCHAIN=auto). Building golangci-lint with it lets it lint
+# this module; a plain `go install` would use the local Go, which may be older.
+tools: ## Install the pinned golangci-lint (built with the module's Go) into GOBIN
+	GOTOOLCHAIN=$$(go env GOVERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@"$(GOBIN_DIR)/golangci-lint" version
 
 fmt: ## Format all Go files in place (gofmt -w)
 	gofmt -w .
@@ -38,8 +42,7 @@ vet: ## Run go vet
 golangci-lint: ## Run golangci-lint (version pinned in GOLANGCI_LINT_VERSION)
 	@if [ -z "$(GOLANGCI_LINT)" ]; then \
 		echo "golangci-lint not found. Install the pinned version with:" >&2; \
-		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)" >&2; \
-		echo "(or run: make tools)" >&2; \
+		echo "  make tools" >&2; \
 		exit 1; \
 	fi
 	@want="$(GOLANGCI_LINT_VERSION)"; \
@@ -55,11 +58,6 @@ test: ## Run all tests with the race detector (needs ffmpeg in PATH)
 
 test-integration: ## Run the integration suite verbosely (needs ffmpeg in PATH)
 	go test -v -race -count=1 ./tests/integration/
-
-cover: ## Run the integration suite with app coverage and print a summary
-	COVERAGE_OUT=coverage.out go test -count=1 ./tests/integration/
-	@if [ -f coverage.out ]; then go tool cover -func=coverage.out; \
-	else echo "no coverage.out: no app was built"; fi
 
 build: ## Build all packages
 	go build ./...

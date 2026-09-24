@@ -7,6 +7,10 @@
 # `up -d --build --wait` and expects the API on localhost:8080 and the
 # MailHog HTTP API on localhost:8025.
 #
+# Observability (docs/observability.md): Prometheus on localhost:9091 and
+# Grafana on localhost:3000 start with everything else (they add no time to
+# `up --wait`: they are healthy in a few seconds, in parallel).
+#
 # Every setting has a development default (${VAR:-default}), so no .env
 # file is needed; .env.example documents the variables. Infrastructure ports
 # are published on 127.0.0.1 only, for running a service or a test from the
@@ -15,8 +19,10 @@
 # Metrics (docs/observability.md, "Metrics"): GET /metrics is served on
 # api:9090 (METRICS_ADDR), worker:8081 and notifier:8081 (HEALTH_ADDR), and
 # RabbitMQ's on rabbitmq:15692. The services' metrics ports are not
-# published: Prometheus scrapes them over the compose network (and worker
-# replicas have no fixed host port). Read one by hand with e.g.
+# published: the prometheus service scrapes them over the compose network
+# (and worker replicas have no fixed host port). Prometheus is on
+# http://localhost:9091 and Grafana on http://localhost:3000 (both
+# 127.0.0.1 only). Read one by hand with e.g.
 #   docker compose -f deploy/docker-compose.yml exec api wget -qO- http://127.0.0.1:9090/metrics
 
 name: video-processor
@@ -315,7 +321,78 @@ services:
     # Longer than SHUTDOWN_TIMEOUT, so in-flight e-mails can finish.
     stop_grace_period: 20s
 
+  # Metrics and alerts (docs/observability.md, "Prometheus", "Alerts"):
+  # scrapes every service over the compose network (worker replicas through
+  # Docker's DNS, so --scale worker=N just works) and evaluates the rules in
+  # deploy/prometheus/rules. UI on http://localhost:9091 (host port 9091,
+  # not 9090, which is the api's internal metrics port). Started by default
+  # with the rest of the stack: it adds a few seconds to `up --wait`.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # A local demo: keep little history.
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-2d}
+      - --storage.tsdb.retention.size=512MB
+      # POST /-/reload re-reads the config and rules after an edit.
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  # Dashboards (docs/observability.md, "Grafana"): the Prometheus datasource
+  # and the "FIAP X Video Processor" dashboard (deploy/grafana/dashboards)
+  # are provisioned, nothing to click. http://localhost:3000 opens the
+  # dashboard read-only for anonymous visitors (local demo only); sign in
+  # with GRAFANA_ADMIN_USER / GRAFANA_ADMIN_PASSWORD (dev defaults
+  # admin/admin) to edit. Provisioned dashboards are reloaded from disk
+  # every 10 s.
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-true}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/video-processor.json
+      # No outbound calls: no plugin preinstall, update checks, news or
+      # usage reporting (the stack also runs offline).
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-warn}
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
 volumes:
   postgres-data:
   rabbitmq-data:
   storage-data:
+  prometheus-data:

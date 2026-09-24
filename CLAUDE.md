@@ -69,5 +69,6 @@ Run `make check` (`make help` lists all targets). It is equivalent to:
 gofmt -l .            # must print nothing
 go vet ./...
 golangci-lint run ./...  # pinned version: make tools
+make obs-check        # promtool check of deploy/prometheus (docker)
 go test -race ./...   # needs ffmpeg in PATH
 ```

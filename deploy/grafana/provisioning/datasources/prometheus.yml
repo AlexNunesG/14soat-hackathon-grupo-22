@@ -1,0 +1,19 @@
+# Provisioned Prometheus datasource (docs/observability.md, "Grafana").
+# The uid is fixed: the dashboards in deploy/grafana/dashboards reference it.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Matches scrape_interval in deploy/prometheus/prometheus.yml, so
+      # $__rate_interval is at least 4 scrapes.
+      timeInterval: 5s
+      httpMethod: POST
+      prometheusType: Prometheus
+      prometheusVersion: 3.5.0

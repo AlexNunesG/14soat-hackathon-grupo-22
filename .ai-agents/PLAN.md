@@ -339,7 +339,7 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       processed/failed, processing duration, queue depth (RabbitMQ's built-in
       `rabbitmq_prometheus` plugin instead of a separate exporter). api on an
       internal `METRICS_ADDR` (:9090), worker/notifier on :8081.
-- [ ] Prometheus + Grafana in compose with a provisioned dashboard.
+- [x] Prometheus + Grafana in compose with a provisioned dashboard (Prometheus :9091, Grafana :3000, 12 alert rules checked by `make obs-check` in CI; see [`docs/observability.md`](../docs/observability.md)).
 
 ### Phase 4 — Containers and infrastructure (RT2)
 - [ ] Multi-stage Dockerfile per service (worker image includes ffmpeg),
@@ -413,3 +413,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Phase 0 done: ADRs 0001/0002 + CLAUDE.md (#10), Go 1.27 (#11), Makefile + .editorconfig (#12), golangci-lint v2.14.0 (#13), `__MACOSX` cleanup. |
 | 2026-09-24 | Phase 1 done: OpenAPI v1 contract (#15), stack harness + legacy tests removed (#16), 35 v1 tests all skipped (#17, #18; validated against a throwaway fake), README/Makefile/CI cleanup. |
 | 2026-09-24 | Phase 2 done: foundation + compose (#20), persistence/auth (#21), outbox/worker/download (#22), Redis cache + web UI (#23), notifications (2.5). All 35 integration tests enabled and passing. |
+| 2026-09-24 | Phase 3 done: correlated logs (#25), metrics on every service (#26), Prometheus + Grafana + alert rules (3.3). |

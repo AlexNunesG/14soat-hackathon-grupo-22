@@ -1,0 +1,16 @@
+# Loads every dashboard JSON of deploy/grafana/dashboards (mounted at
+# /etc/grafana/dashboards). Edit the JSON files, not the dashboards in the
+# UI: changes made in the UI cannot be saved over a provisioned dashboard
+# (export them with Share → Export and replace the file instead).
+apiVersion: 1
+
+providers:
+  - name: video-processor
+    folder: FIAP X
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

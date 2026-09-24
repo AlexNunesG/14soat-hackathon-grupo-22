@@ -82,6 +82,10 @@ requests.
 - `ffmpeg` in `PATH`: it generates the test videos. Without it the suite
   fails at once.
 - For the default mode, `docker` with the compose plugin.
+- In the default mode the stack also runs Prometheus and Grafana
+  (not used by the tests), published on `127.0.0.1:9091` and
+  `127.0.0.1:3000`: these ports must be free, or set `PROMETHEUS_PORT` /
+  `GRAFANA_PORT` (`.env.example`).
 
 ## Running against the compose stack (default)
 

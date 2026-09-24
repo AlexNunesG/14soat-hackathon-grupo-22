@@ -3,6 +3,10 @@
 COMPOSE_FILE ?= deploy/docker-compose.yml
 COMPOSE      := docker compose -f $(COMPOSE_FILE)
 
+# Keep in sync with the prometheus service in deploy/docker-compose.yml.
+PROMETHEUS_IMAGE ?= prom/prometheus:v3.5.0
+PROMTOOL         := docker run --rm -v "$(CURDIR)/deploy/prometheus:/etc/prometheus:ro" --entrypoint promtool $(PROMETHEUS_IMAGE)
+
 # Keep in sync with the golangci-lint step in .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION ?= v2.14.0
 # Prefer the copy `make tools` installs (GOBIN or GOPATH/bin) over any other
@@ -13,7 +17,7 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 .DEFAULT_GOAL := help
 
 .PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down migrate logs docker-build compose-file check clean
+	up down migrate logs docker-build compose-file obs-check check clean
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -68,7 +72,7 @@ compose-file:
 		exit 1; \
 	fi
 
-up: compose-file ## Build and start the local stack, wait until it is healthy
+up: compose-file ## Build and start the local stack (incl. Prometheus :9091, Grafana :3000), wait until healthy
 	$(COMPOSE) up -d --build --wait
 
 down: compose-file ## Stop the local stack and remove its volumes
@@ -83,7 +87,11 @@ logs: compose-file ## Follow the local stack logs
 docker-build: compose-file ## Build the service images of the local stack
 	$(COMPOSE) build
 
-check: lint test ## Run everything CI runs; use before pushing
+obs-check: ## Validate the Prometheus config and alert rules with promtool (docker)
+	$(PROMTOOL) check config /etc/prometheus/prometheus.yml
+	$(PROMTOOL) check rules $(patsubst deploy/prometheus/%,/etc/prometheus/%,$(wildcard deploy/prometheus/rules/*.yml))
+
+check: lint obs-check test ## Run everything CI runs; use before pushing
 
 clean: ## Remove coverage output
 	rm -f coverage.out coverage.txt

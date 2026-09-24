@@ -52,5 +52,10 @@ jobs:
           # Keep in sync with GOLANGCI_LINT_VERSION in the Makefile.
           version: v2.14.0
 
+      # promtool from the image the compose stack runs (make obs-check); the
+      # integration tests pull the same image anyway.
+      - name: Check Prometheus config and alert rules
+        run: make obs-check
+
       - name: Integration tests
         run: go test -v -race -count=1 ./...

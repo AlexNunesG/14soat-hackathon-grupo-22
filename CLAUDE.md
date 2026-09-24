@@ -63,6 +63,8 @@ and don't import each other; `cmd/*` holds no business logic.
 
 ## Before pushing
 
+Run `make check` (`make help` lists all targets). It is equivalent to:
+
 ```sh
 gofmt -l .            # must print nothing
 go vet ./...

@@ -164,7 +164,7 @@ at the top of this plan.
 - [x] Upgrade Go version (1.21 is EOL) and pin tool versions: `go 1.27`
       (latest stable); gin dropped from `go.mod` until code imports it
       (gin ≥ v1.12 is compatible). Linter versions are pinned in the lint step.
-- [ ] Add `Makefile` (`make lint test up down`) and `.editorconfig`.
+- [x] Add `Makefile` (`make lint test up down`; `make check` before pushing) and `.editorconfig`.
 - [ ] Add `golangci-lint` config and run it in CI.
 - [ ] Remove the stray `__MACOSX/` folder and add it to `.gitignore`.
 

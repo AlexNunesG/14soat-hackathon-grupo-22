@@ -75,7 +75,7 @@ concepts from the course.
 
 ## 3. Starting point (repo state)
 
-- Go module `video-processor` (Go 1.21, Gin). The original `main.go` and
+- Go module `video-processor` (was Go 1.21 + Gin; now Go 1.27, no deps yet). The original `main.go` and
   `Dockerfile` were removed in #8 (still in git history: `git show HEAD~1:main.go`).
 - `tests/integration/`: 28 black-box HTTP tests describing the **legacy**
   contract (`GET /`, `POST /upload` synchronous, `GET /api/status`,
@@ -161,7 +161,9 @@ at the top of this plan.
 - [x] Decide repo layout and record it in an ADR: single-module monorepo,
       `cmd/{api,worker,notifier}` + `internal/…`
       ([ADR 0002](../docs/adr/0002-repository-layout.md)).
-- [ ] Upgrade Go version (1.21 is EOL) and pin tool versions.
+- [x] Upgrade Go version (1.21 is EOL) and pin tool versions: `go 1.27`
+      (latest stable); gin dropped from `go.mod` until code imports it
+      (gin ≥ v1.12 is compatible). Linter versions are pinned in the lint step.
 - [ ] Add `Makefile` (`make lint test up down`) and `.editorconfig`.
 - [ ] Add `golangci-lint` config and run it in CI.
 - [ ] Remove the stray `__MACOSX/` folder and add it to `.gitignore`.

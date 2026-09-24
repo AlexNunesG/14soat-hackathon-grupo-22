@@ -61,6 +61,11 @@ func migrate() error {
 		return err
 	}
 	defer db.Close()
+	// The database may still be starting (compose starts migrate as soon as
+	// postgres reports healthy); wait for it instead of failing the stack.
+	if err := postgres.WaitReady(ctx, db, 60*time.Second, time.Second); err != nil {
+		return err
+	}
 	version, err := postgres.Migrate(ctx, db, migrations.FS, log)
 	if err != nil {
 		return err

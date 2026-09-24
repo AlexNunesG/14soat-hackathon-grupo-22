@@ -1,55 +1,75 @@
 // Package integration holds black-box integration tests for the video
-// processor. Each endpoint has its own *_test.go file.
+// processor: the executable form of the v1 contract in docs/openapi.yaml
+// (see docs/adr/0001-replace-legacy-test-contract.md). Each area of the
+// contract has its own *_test.go file.
 //
-// The tests only talk to the app over HTTP; they never import its code. No
-// mocks are used: videos are generated and processed by the real ffmpeg and
-// assertions are made on real ZIP/PNG output.
+// The tests only talk to the running system over HTTP: the API at BASE_URL
+// and the MailHog inbox at MAILHOG_URL. They never import its code. No mocks
+// are used: videos are generated with the real ffmpeg and processed by the
+// real services, and assertions are made on real ZIP/PNG output and real
+// e-mails.
 //
 // Two modes:
 //
-//   - Default: TestMain builds the app from the module root, runs it as a
-//     separate process on a free port (PORT env var) inside a throwaway
-//     working directory, and stops it with SIGTERM at the end. Tests marked
-//     with requireReferenceApp also inspect and manipulate that working
-//     directory (uploads/, outputs/, temp/) to reach failure paths. If the
-//     module root has no Go code yet, nothing is started: skipped tests pass
-//     and any enabled test fails, saying the app is missing.
-//
 //   - BASE_URL=http://host:port: the tests run against an already running
-//     implementation. Nothing is built or started, and tests that depend on
-//     the reference implementation's filesystem layout are skipped.
+//     stack. Nothing is started or stopped. MAILHOG_URL points to the MailHog
+//     HTTP API used by the notification tests (default
+//     http://localhost:8025).
 //
-// Set COVERAGE_OUT=coverage.out (default mode only) to build the app with
-// coverage instrumentation and write a profile for `go tool cover`. A
-// relative path is resolved against the module root.
+//   - Default (BASE_URL unset): if the compose file exists (COMPOSE_FILE,
+//     default deploy/docker-compose.yml; a relative path is resolved against
+//     the module root) and docker is available, TestMain runs
+//     `docker compose -f <file> up -d --build --wait` before the tests and
+//     `docker compose -f <file> down -v` after them (set KEEP_STACK=1 to leave
+//     the stack running). The API is then expected at http://localhost:8080
+//     and MailHog at http://localhost:8025. Without a compose file or docker,
+//     nothing is started: skipped tests pass and any enabled test fails with
+//     "no app to test".
 //
-// Requirements: ffmpeg in PATH (used to generate the test videos).
+// In both modes TestMain waits up to 120s for GET /healthz to return 200
+// before running the tests, so enabled tests don't race the stack's startup.
+// If the API never becomes healthy, enabled tests fail with the reason.
+//
+// Coverage is not collected here: the services run in containers or
+// elsewhere. Code coverage comes from the unit tests.
+//
+// Requirements: ffmpeg in PATH (used to generate the test videos); docker
+// with the compose plugin for the default mode.
 package integration
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
 
+const (
+	// stackBaseURL and stackMailhogURL are where the compose stack publishes
+	// the API and the MailHog HTTP API.
+	stackBaseURL    = "http://localhost:8080"
+	stackMailhogURL = "http://localhost:8025"
+
+	// healthTimeout bounds the wait for GET /healthz before the tests run.
+	healthTimeout = 120 * time.Second
+)
+
 var (
-	// baseURL is where the app under test is listening.
+	// baseURL is where the API under test is listening, or "" when there is
+	// no app to test.
 	baseURL string
 
-	// referenceDir is the working directory of the app launched by TestMain,
-	// or "" when running against an external BASE_URL.
-	referenceDir string
+	// mailhogURL is the MailHog HTTP API holding the e-mails sent by the
+	// notifier.
+	mailhogURL string
 
-	// reference is the app launched by TestMain, nil with BASE_URL.
-	reference *referenceApp
+	// errNoApp explains why there is no app to test; enabled tests fail with it.
+	errNoApp = errors.New("no app to test: set BASE_URL or add deploy/docker-compose.yml")
 )
 
 func TestMain(m *testing.M) {
@@ -62,171 +82,136 @@ func run(m *testing.M) int {
 		return 1
 	}
 
+	mailhogURL = strings.TrimRight(envOr("MAILHOG_URL", stackMailhogURL), "/")
+
 	if url := os.Getenv("BASE_URL"); url != "" {
 		baseURL = strings.TrimRight(url, "/")
-		if err := waitForServer(30 * time.Second); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
+		waitForApp()
 		return m.Run()
 	}
 
-	root, err := goEnv("GOMOD")
+	composeFile, err := composeFilePath()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	root = filepath.Dir(root)
-
-	if !hasApp(root) {
-		fmt.Fprintf(os.Stderr, "no app found in %s: nothing was started, so every enabled test will fail\n", root)
+	if reason := cannotStartStack(composeFile); reason != "" {
+		fmt.Fprintf(os.Stderr, "%s: nothing was started, so every enabled test will fail\n", reason)
 		return m.Run()
 	}
 
-	app, err := startReferenceApp(root)
-	if err != nil {
+	stack := &composeStack{file: composeFile}
+	if err := stack.up(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		stack.down()
 		return 1
 	}
+	baseURL = stackBaseURL
+	waitForApp()
 	code := m.Run()
-	if err := app.stop(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		if code == 0 {
-			code = 1
-		}
+	if !stack.down() && code == 0 {
+		code = 1
 	}
 	return code
 }
 
-type referenceApp struct {
-	root     string
-	bin      string
-	port     string
-	cmd      *exec.Cmd
-	tmp      string
-	coverDir string
-	log      *bytes.Buffer
-}
-
-// hasApp reports whether the module root contains a Go package to build.
-func hasApp(root string) bool {
-	files, _ := filepath.Glob(filepath.Join(root, "*.go"))
-	for _, f := range files {
-		if !strings.HasSuffix(f, "_test.go") {
-			return true
-		}
+// composeFilePath returns the compose file to start, from COMPOSE_FILE or
+// the default under the module root.
+func composeFilePath() (string, error) {
+	file := envOr("COMPOSE_FILE", filepath.Join("deploy", "docker-compose.yml"))
+	if filepath.IsAbs(file) {
+		return file, nil
 	}
-	return false
-}
-
-func startReferenceApp(moduleRoot string) (*referenceApp, error) {
-	tmp, err := os.MkdirTemp("", "video-processor-it-*")
+	gomod, err := goEnv("GOMOD")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	app := &referenceApp{tmp: tmp, log: &bytes.Buffer{}}
-	fail := func(err error) (*referenceApp, error) {
-		os.RemoveAll(tmp)
-		return nil, err
-	}
-
-	app.root = moduleRoot
-
-	bin := filepath.Join(tmp, "app")
-	args := []string{"build", "-o", bin}
-	if os.Getenv("COVERAGE_OUT") != "" {
-		app.coverDir = filepath.Join(tmp, "cover")
-		if err := os.Mkdir(app.coverDir, 0755); err != nil {
-			return fail(err)
-		}
-		args = append(args, "-cover")
-	}
-	build := exec.Command("go", append(args, ".")...)
-	build.Dir = moduleRoot
-	if out, err := build.CombinedOutput(); err != nil {
-		return fail(fmt.Errorf("building the app failed: %w\n%s", err, out))
-	}
-
-	port, err := freePort()
-	if err != nil {
-		return fail(err)
-	}
-
-	referenceDir = filepath.Join(tmp, "work")
-	if err := os.Mkdir(referenceDir, 0755); err != nil {
-		return fail(err)
-	}
-
-	app.bin, app.port = bin, port
-	app.cmd = app.command(referenceDir, port)
-	app.cmd.Stdout = app.log
-	app.cmd.Stderr = app.log
-	if err := app.cmd.Start(); err != nil {
-		return fail(err)
-	}
-
-	baseURL = "http://127.0.0.1:" + port
-	if err := waitForServer(30 * time.Second); err != nil {
-		_ = app.cmd.Process.Kill()
-		_ = app.cmd.Wait()
-		return fail(fmt.Errorf("%w\napp output:\n%s", err, app.log))
-	}
-	reference = app
-	return app, nil
+	// `go test` runs in the package directory, so resolve relative paths
+	// against the module root, like the Makefile does.
+	return filepath.Join(filepath.Dir(gomod), file), nil
 }
 
-// command prepares another run of the app binary in dir, listening on port.
-// An empty port leaves PORT unset so the app falls back to its default.
-func (a *referenceApp) command(dir, port string) *exec.Cmd {
-	cmd := exec.Command(a.bin)
-	cmd.Dir = dir
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "PORT=") {
-			cmd.Env = append(cmd.Env, kv)
-		}
+// cannotStartStack returns why the compose stack cannot be started, or "".
+func cannotStartStack(composeFile string) string {
+	if _, err := os.Stat(composeFile); err != nil {
+		return fmt.Sprintf("no compose file at %s and BASE_URL is not set", composeFile)
 	}
-	cmd.Env = append(cmd.Env, "GIN_MODE=release")
-	if port != "" {
-		cmd.Env = append(cmd.Env, "PORT="+port)
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Sprintf("docker is not available to start %s and BASE_URL is not set", composeFile)
 	}
-	if a.coverDir != "" {
-		cmd.Env = append(cmd.Env, "GOCOVERDIR="+a.coverDir)
-	}
-	return cmd
+	return ""
 }
 
-// stop shuts the app down gracefully (so coverage data is flushed) and
-// writes the coverage profile when requested.
-func (a *referenceApp) stop() error {
-	defer os.RemoveAll(a.tmp)
+// composeStack is the stack started by TestMain with docker compose.
+type composeStack struct {
+	file string
+}
 
-	if err := a.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		return err
-	}
-	done := make(chan error, 1)
-	go func() { done <- a.cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("app did not exit cleanly: %w\napp output:\n%s", err, a.log)
-		}
-	case <-time.After(30 * time.Second):
-		_ = a.cmd.Process.Kill()
-		return fmt.Errorf("app did not stop within 30s after SIGTERM")
-	}
-
-	if out := os.Getenv("COVERAGE_OUT"); out != "" {
-		if !filepath.IsAbs(out) {
-			// `go test` runs in the package directory, so resolve relative
-			// paths against the module root for a predictable location.
-			out = filepath.Join(a.root, out)
-		}
-		cmd := exec.Command("go", "tool", "covdata", "textfmt", "-i="+a.coverDir, "-o="+out)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("writing coverage profile: %w\n%s", err, output)
-		}
+func (s *composeStack) up() error {
+	if err := s.compose("up", "-d", "--build", "--wait"); err != nil {
+		return fmt.Errorf("starting the stack from %s failed: %w", s.file, err)
 	}
 	return nil
+}
+
+// down removes the stack and its volumes unless KEEP_STACK=1. It reports
+// whether that succeeded.
+func (s *composeStack) down() bool {
+	if os.Getenv("KEEP_STACK") == "1" {
+		fmt.Fprintf(os.Stderr, "KEEP_STACK=1: leaving the stack from %s running\n", s.file)
+		return true
+	}
+	if err := s.compose("down", "-v"); err != nil {
+		fmt.Fprintf(os.Stderr, "stopping the stack from %s failed: %v\n", s.file, err)
+		return false
+	}
+	return true
+}
+
+// compose runs `docker compose -f <file> args...`, streaming its output to
+// stderr so slow image builds show progress.
+func (s *composeStack) compose(args ...string) error {
+	cmd := exec.Command("docker", append([]string{"compose", "-f", s.file}, args...)...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// waitForApp waits until GET /healthz returns 200. On timeout the app is
+// marked as unavailable, so enabled tests fail with the reason instead of
+// each one waiting or reporting a confusing error.
+func waitForApp() {
+	if err := waitForHealthy(baseURL, healthTimeout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		errNoApp = err
+		baseURL = ""
+	}
+}
+
+func waitForHealthy(url string, timeout time.Duration) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url + "/healthz")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			err = fmt.Errorf("status %d", resp.StatusCode)
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("no app to test: GET %s/healthz did not return 200 within %s (last error: %w)", url, timeout, lastErr)
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func goEnv(key string) (string, error) {
@@ -239,26 +224,4 @@ func goEnv(key string) (string, error) {
 		return "", fmt.Errorf("go env %s is empty: run the tests inside the module", key)
 	}
 	return value, nil
-}
-
-func freePort() (string, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
-	}
-	defer ln.Close()
-	return fmt.Sprint(ln.Addr().(*net.TCPAddr).Port), nil
-}
-
-func waitForServer(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(baseURL + "/api/status")
-		if err == nil {
-			resp.Body.Close()
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("server at %s did not respond within %s", baseURL, timeout)
 }

@@ -196,6 +196,9 @@ func TestOutboxRelayPublishesAndBacksOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	outbox := NewOutbox(pool)
+	if n, err := outbox.Pending(ctx); err != nil || n != 3 {
+		t.Fatalf("Pending before the relay = %d, %v; want 3", n, err)
+	}
 
 	// The broker accepts the first and third messages only.
 	var got []app.Message
@@ -219,6 +222,10 @@ func TestOutboxRelayPublishesAndBacksOff(t *testing.T) {
 		rows[0].availableIn < 500*time.Millisecond || rows[0].availableIn > baseRelayBackoff {
 		t.Fatalf("after a failed publish: %+v", rows)
 	}
+	// A delayed message is still pending.
+	if n, err := outbox.Pending(ctx); err != nil || n != 1 {
+		t.Fatalf("Pending after a failed publish = %d, %v; want 1", n, err)
+	}
 
 	// Not due yet: nothing is claimed.
 	n, err = outbox.Relay(ctx, 10, func(context.Context, []app.Message) []error {
@@ -241,6 +248,9 @@ func TestOutboxRelayPublishesAndBacksOff(t *testing.T) {
 	}
 	if rows := outboxRows(t, pool); len(rows) != 0 {
 		t.Errorf("outbox not empty: %+v", rows)
+	}
+	if n, err := outbox.Pending(ctx); err != nil || n != 0 {
+		t.Errorf("Pending once published = %d, %v; want 0", n, err)
 	}
 }
 

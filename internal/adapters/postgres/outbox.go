@@ -143,3 +143,14 @@ func delay(ctx context.Context, tx pgx.Tx, id int64, cause error) error {
 	}
 	return nil
 }
+
+// Pending returns the number of messages waiting in the outbox: not
+// published yet, whether due now or delayed after a failed publish (the
+// videoproc_outbox_pending metric).
+func (o *Outbox) Pending(ctx context.Context) (int64, error) {
+	var n int64
+	if err := o.db.QueryRow(ctx, `SELECT count(*) FROM outbox`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres: count outbox messages: %w", err)
+	}
+	return n, nil
+}

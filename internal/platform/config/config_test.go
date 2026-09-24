@@ -41,7 +41,7 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.Config{
-		HTTP:     config.HTTP{Addr: ":8080", ShutdownTimeout: 15 * time.Second},
+		HTTP:     config.HTTP{Addr: ":8080", MetricsAddr: ":9090", ShutdownTimeout: 15 * time.Second},
 		LogLevel: slog.LevelInfo,
 		Database: config.Database{URL: testDatabaseURL},
 		Broker:   config.Broker{URL: testAMQPURL},
@@ -63,6 +63,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := config.Load(env(map[string]string{
 		"HTTP_ADDR":         "0.0.0.0:9090",
+		"METRICS_ADDR":      "127.0.0.1:9100",
 		"SHUTDOWN_TIMEOUT":  "30s",
 		"LOG_LEVEL":         "debug",
 		"DATABASE_URL":      "postgresql://db:5432/x",
@@ -87,7 +88,7 @@ func TestLoadOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTP.Addr != "0.0.0.0:9090" || cfg.HTTP.ShutdownTimeout != 30*time.Second ||
+	if cfg.HTTP.Addr != "0.0.0.0:9090" || cfg.HTTP.MetricsAddr != "127.0.0.1:9100" || cfg.HTTP.ShutdownTimeout != 30*time.Second ||
 		cfg.LogLevel != slog.LevelDebug || cfg.Database.URL != "postgresql://db:5432/x" ||
 		cfg.Broker.URL != "amqps://mq:5671/vh" || cfg.Storage.Endpoint != "https://s3.example.com" ||
 		cfg.Storage.AccessKey != "ak" || cfg.Storage.SecretKey != "sk" || cfg.Storage.Bucket != "my.bucket-1" ||
@@ -117,6 +118,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{"HTTP_ADDR", "8080"},
 		{"HTTP_ADDR", ":http-alt"},
 		{"HTTP_ADDR", ":70000"},
+		{"METRICS_ADDR", "9090"},
 		{"SHUTDOWN_TIMEOUT", "15"},
 		{"SHUTDOWN_TIMEOUT", "-1s"},
 		{"LOG_LEVEL", "loud"},

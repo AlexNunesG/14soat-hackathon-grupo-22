@@ -81,6 +81,30 @@ func (r *fakeRetrier) Retry(_ context.Context, w WorkQueue, _ amqp.Delivery, att
 	return r.err
 }
 
+// fakeMetrics records what the consumer reports.
+type fakeMetrics struct {
+	mu       sync.Mutex
+	outcomes []app.Outcome
+	inFlight int
+	peak     int
+}
+
+func (m *fakeMetrics) RecordOutcome(o app.Outcome, d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d < 0 {
+		panic("negative duration")
+	}
+	m.outcomes = append(m.outcomes, o)
+}
+
+func (m *fakeMetrics) InFlight(delta int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inFlight += delta
+	m.peak = max(m.peak, m.inFlight)
+}
+
 var testQueue = WorkQueue{
 	Exchange: "ex", RoutingKey: "k", Queue: "q", DeadLetterExchange: "dlx",
 	RetryDelays: []time.Duration{time.Millisecond, time.Millisecond},
@@ -118,17 +142,20 @@ func TestHandleSettlesDeliveries(t *testing.T) {
 		want        string
 		wantRetries []int
 		wantGiveUp  bool
+		// wantOutcome is the outcome reported to the metrics ("" for none:
+		// the handler reports the outcome of a message it finished).
+		wantOutcome app.Outcome
 	}{
 		{name: "success", want: "[ack]"},
-		{name: "first failure is retried", handleErr: errBoom, want: "[ack]", wantRetries: []int{2}},
-		{name: "second failure is retried", attempt: 2, handleErr: errBoom, want: "[ack]", wantRetries: []int{3}},
-		{name: "last attempt gives up", attempt: 3, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true},
-		{name: "beyond the last attempt gives up", attempt: 9, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true},
-		{name: "malformed is dead-lettered at once", handleErr: malformed, want: "[dead-letter]"},
-		{name: "permanent failure is dead-lettered at once", handleErr: fmt.Errorf("%w: 550 no such user", app.ErrPermanent), want: "[dead-letter]"},
-		{name: "shutdown requeues", handleErr: context.Canceled, shutdown: true, want: "[requeue]"},
-		{name: "retry publish failure requeues", handleErr: errBoom, retryErr: errBoom, want: "[requeue]", wantRetries: []int{2}},
-		{name: "give up failure requeues", attempt: 3, handleErr: errBoom, giveUpErr: errBoom, want: "[requeue]", wantGiveUp: true},
+		{name: "first failure is retried", handleErr: errBoom, want: "[ack]", wantRetries: []int{2}, wantOutcome: app.OutcomeRetried},
+		{name: "second failure is retried", attempt: 2, handleErr: errBoom, want: "[ack]", wantRetries: []int{3}, wantOutcome: app.OutcomeRetried},
+		{name: "last attempt gives up", attempt: 3, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true, wantOutcome: app.OutcomeDeadLettered},
+		{name: "beyond the last attempt gives up", attempt: 9, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true, wantOutcome: app.OutcomeDeadLettered},
+		{name: "malformed is dead-lettered at once", handleErr: malformed, want: "[dead-letter]", wantOutcome: app.OutcomeDeadLettered},
+		{name: "permanent failure is dead-lettered at once", handleErr: fmt.Errorf("%w: 550 no such user", app.ErrPermanent), want: "[dead-letter]", wantOutcome: app.OutcomeDeadLettered},
+		{name: "shutdown requeues", handleErr: context.Canceled, shutdown: true, want: "[requeue]", wantOutcome: app.OutcomeRequeued},
+		{name: "retry publish failure requeues", handleErr: errBoom, retryErr: errBoom, want: "[requeue]", wantRetries: []int{2}, wantOutcome: app.OutcomeRequeued},
+		{name: "give up failure requeues", attempt: 3, handleErr: errBoom, giveUpErr: errBoom, want: "[requeue]", wantGiveUp: true, wantOutcome: app.OutcomeRequeued},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,6 +167,8 @@ func TestHandleSettlesDeliveries(t *testing.T) {
 			}
 			r := &fakeRetrier{err: tt.retryErr}
 			c := newTestConsumer(t, h, r, 0)
+			m := &fakeMetrics{}
+			c.cfg.Metrics = m
 			ack := &fakeAck{}
 			if tt.retryErr != nil || tt.giveUpErr != nil {
 				// The requeue waits requeueDelay unless the context ends.
@@ -159,6 +188,16 @@ func TestHandleSettlesDeliveries(t *testing.T) {
 			}
 			if tt.wantGiveUp && !errors.Is(h.gaveUp[0], errBoom) {
 				t.Errorf("GiveUp cause %v, want the handler's error", h.gaveUp[0])
+			}
+			var want []app.Outcome
+			if tt.wantOutcome != "" {
+				want = []app.Outcome{tt.wantOutcome}
+			}
+			if fmt.Sprint(m.outcomes) != fmt.Sprint(want) {
+				t.Errorf("outcomes %v, want %v", m.outcomes, want)
+			}
+			if m.peak != 1 || m.inFlight != 0 {
+				t.Errorf("in flight peaked at %d and ended at %d, want 1 and 0", m.peak, m.inFlight)
 			}
 		})
 	}

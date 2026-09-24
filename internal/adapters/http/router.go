@@ -43,6 +43,10 @@ type Options struct {
 	UploadTempDir string
 	// WebUI serves the web UI at GET / and its assets under /ui/.
 	WebUI bool
+	// Metrics, when set, records the HTTP and upload metrics
+	// (NewMetrics). The metrics are not served by this router: the api
+	// serves them on a separate internal listener (METRICS_ADDR).
+	Metrics *Metrics
 }
 
 func init() {
@@ -67,7 +71,7 @@ func NewRouter(opts Options) http.Handler {
 		maxUpload = DefaultMaxUploadBytes
 	}
 
-	r := newEngine(log, opts.Checks, timeout)
+	r := newEngine(log, opts.Checks, timeout, opts.Metrics)
 	v1 := r.Group("/api/v1")
 	v1.POST("/auth/register", register(log, opts.Auth))
 	v1.POST("/auth/login", login(log, opts.Auth))
@@ -75,7 +79,7 @@ func NewRouter(opts Options) http.Handler {
 	// Every video route requires a bearer token (docs/openapi.yaml).
 	videos := v1.Group("/videos", requireAuth(log, opts.Tokens), videoIDField())
 	videos.GET("", listVideos(log, opts.Videos))
-	videos.POST("", uploadVideos(log, opts.Uploads, maxUpload, opts.UploadTempDir))
+	videos.POST("", uploadVideos(log, opts.Uploads, maxUpload, opts.UploadTempDir, opts.Metrics))
 	videos.GET("/:id", getVideo(log, opts.Videos))
 	videos.GET("/:id/download", downloadVideo(log, opts.Videos))
 	if opts.WebUI {
@@ -93,15 +97,21 @@ func NewHealthRouter(log *slog.Logger, checks []Check, checkTimeout time.Duratio
 	if checkTimeout <= 0 {
 		checkTimeout = DefaultCheckTimeout
 	}
-	return newEngine(log, checks, checkTimeout)
+	return newEngine(log, checks, checkTimeout, nil)
 }
 
 // newEngine returns an engine with the middleware, the 404 envelope and the
-// probes.
-func newEngine(log *slog.Logger, checks []Check, checkTimeout time.Duration) *gin.Engine {
+// probes; m (optional) records the HTTP metrics.
+func newEngine(log *slog.Logger, checks []Check, checkTimeout time.Duration, m *Metrics) *gin.Engine {
 	r := gin.New()
 	r.ContextWithFallback = true // c.Done()/c.Err() follow the request context
-	r.Use(requestID(), requestLogger(log), recoverer(log))
+	r.Use(requestID(), requestLogger(log))
+	if m != nil {
+		// After the access log and before the recoverer, so a panic is
+		// counted as the 500 it is answered with.
+		r.Use(m.middleware())
+	}
+	r.Use(recoverer(log))
 	r.NoRoute(func(c *gin.Context) {
 		WriteError(c, http.StatusNotFound, CodeNotFound, "route not found")
 	})

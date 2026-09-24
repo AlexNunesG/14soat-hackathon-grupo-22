@@ -4,7 +4,8 @@
 // wires configuration, logging and adapters, and holds no business logic
 // (ADR 0002).
 //
-// It serves GET /healthz and GET /readyz on HEALTH_ADDR. On SIGINT/SIGTERM
+// It serves GET /healthz, GET /readyz and GET /metrics (Prometheus) on
+// HEALTH_ADDR, an internal listener. On SIGINT/SIGTERM
 // it stops taking events, lets in-flight e-mails finish for up to
 // SHUTDOWN_TIMEOUT and requeues the rest.
 package main
@@ -21,10 +22,12 @@ import (
 	httpapi "video-processor/internal/adapters/http"
 	"video-processor/internal/adapters/mailer"
 	"video-processor/internal/adapters/postgres"
+	"video-processor/internal/adapters/prom"
 	"video-processor/internal/adapters/rabbitmq"
 	"video-processor/internal/app"
 	"video-processor/internal/platform/config"
 	"video-processor/internal/platform/logging"
+	"video-processor/internal/platform/metrics"
 )
 
 func main() {
@@ -55,6 +58,10 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	// Prometheus metrics (docs/observability.md), served on HEALTH_ADDR.
+	reg := metrics.NewRegistry("notifier")
+	notifierMetrics := prom.NewNotifier(reg)
+
 	broker, err := rabbitmq.NewProbe(cfg.Broker.URL)
 	if err != nil {
 		return err
@@ -78,8 +85,8 @@ func run() error {
 	}
 	defer retries.Close()
 
-	notifier := app.NewNotifier(smtp, postgres.NewNotifications(db),
-		app.WithNotifierLogger(log), app.WithAppURL(cfg.AppURL))
+	notifier := app.NewNotifier(notifierMetrics.InstrumentMailer(smtp), postgres.NewNotifications(db),
+		app.WithNotifierLogger(log), app.WithAppURL(cfg.AppURL), app.WithNotifierMetrics(notifierMetrics))
 	consumer, err := rabbitmq.NewConsumer(rabbitmq.ConsumerConfig{
 		URL:             cfg.Broker.URL,
 		Name:            "notifier",
@@ -87,6 +94,7 @@ func run() error {
 		Concurrency:     cfg.Concurrency,
 		MaxAttempts:     cfg.MaxAttempts,
 		ShutdownTimeout: cfg.ShutdownTimeout,
+		Metrics:         notifierMetrics,
 	}, notifier, retries, log)
 	if err != nil {
 		return err
@@ -105,7 +113,7 @@ func run() error {
 	}
 	healthErr := make(chan error, 1)
 	go func() {
-		err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HealthAddr, health), ln, cfg.ShutdownTimeout)
+		err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HealthAddr, metrics.Mux(reg, health)), ln, cfg.ShutdownTimeout)
 		if err != nil {
 			stop() // a notifier without probes would look dead: shut down
 		}

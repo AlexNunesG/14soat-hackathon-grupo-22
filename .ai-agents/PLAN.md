@@ -335,8 +335,10 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 
 ### Phase 3 — Observability
 - [x] Structured logs (`log/slog`, JSON) with request/job correlation id: `X-Request-ID` → outbox `correlation_id` → AMQP `correlation-id` → worker and notifier logs ([`docs/observability.md`](../docs/observability.md)).
-- [ ] `/metrics` (Prometheus) on each service: HTTP latency/count, jobs
-      processed/failed, processing duration, queue depth (RabbitMQ exporter).
+- [x] `/metrics` (Prometheus) on each service: HTTP latency/count, jobs
+      processed/failed, processing duration, queue depth (RabbitMQ's built-in
+      `rabbitmq_prometheus` plugin instead of a separate exporter). api on an
+      internal `METRICS_ADDR` (:9090), worker/notifier on :8081.
 - [ ] Prometheus + Grafana in compose with a provisioned dashboard.
 
 ### Phase 4 — Containers and infrastructure (RT2)

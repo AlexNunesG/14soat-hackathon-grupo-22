@@ -32,7 +32,12 @@ type ErrorDetail struct {
 	Message string    `json:"message"`
 }
 
+// errorCodeKey is the gin context key of the error code a request was
+// answered with (for the upload metrics).
+const errorCodeKey = "httpapi.error_code"
+
 // WriteError aborts the request with status and the error envelope.
 func WriteError(c *gin.Context, status int, code ErrorCode, message string) {
+	c.Set(errorCodeKey, code)
 	c.AbortWithStatusJSON(status, ErrorBody{Error: ErrorDetail{Code: code, Message: message}})
 }

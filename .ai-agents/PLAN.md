@@ -148,9 +148,9 @@ two ordered steps:
 After Phase 1, the new suite is the spec and follows the **Ground rules**
 at the top of this plan.
 
-- [ ] Record this decision in `docs/adr/0001-replace-legacy-test-contract.md`.
-- [ ] Copy the Ground rules into `tests/integration/README.md` (Phase 1.4) and
-      a `CLAUDE.md` / `CONTRIBUTING.md` so every contributor and agent sees them.
+- [x] Record this decision in [`docs/adr/0001-replace-legacy-test-contract.md`](../docs/adr/0001-replace-legacy-test-contract.md).
+- [x] Copy the Ground rules into [`CLAUDE.md`](../CLAUDE.md).
+- [ ] Copy the Ground rules into `tests/integration/README.md` (Phase 1.4).
 
 ---
 
@@ -158,8 +158,9 @@ at the top of this plan.
 
 ### Phase 0 — Project setup
 - [x] Create `.ai-agents/` with the challenge PDF and this plan.
-- [ ] Decide repo layout (monorepo `services/api`, `services/worker`,
-      `services/notifier`, `pkg/` shared) and record it in an ADR.
+- [x] Decide repo layout and record it in an ADR: single-module monorepo,
+      `cmd/{api,worker,notifier}` + `internal/…`
+      ([ADR 0002](../docs/adr/0002-repository-layout.md)).
 - [ ] Upgrade Go version (1.21 is EOL) and pin tool versions.
 - [ ] Add `Makefile` (`make lint test up down`) and `.editorconfig`.
 - [ ] Add `golangci-lint` config and run it in CI.

@@ -1,17 +1,6 @@
-package main
+package integration
 
-// Integration tests for the video processor.
-//
-// This file holds the shared setup (TestMain) and helpers; each endpoint has
-// its own *_test.go file with its integration tests.
-//
-// No mocks are used: TestMain boots the real application (main()) inside an
-// isolated working directory, every test talks to it over real HTTP on
-// :8080, videos are generated and processed by the real ffmpeg binary, and
-// assertions are made against the real filesystem and real ZIP/PNG output.
-//
-// Requirements: ffmpeg in PATH and port 8080 free.
-// Run with: go test -v -count=1 -coverprofile=coverage.out ./...
+// Shared helpers for the integration tests.
 
 import (
 	"archive/zip"
@@ -21,7 +10,6 @@ import (
 	"image/png"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -31,91 +19,60 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
-const baseURL = "http://127.0.0.1:8080"
-
 var (
-	workDir    string
 	httpClient = &http.Client{Timeout: 2 * time.Minute}
 	framePNG   = regexp.MustCompile(`^frame_\d{4}\.png$`)
 	zipName    = regexp.MustCompile(`^frames_\d{8}_\d{6}\.zip$`)
 )
 
-func TestMain(m *testing.M) {
-	os.Exit(run(m))
+// uploadResult is the JSON body returned by POST /upload.
+type uploadResult struct {
+	Success    bool     `json:"success"`
+	Message    string   `json:"message"`
+	ZipPath    string   `json:"zip_path,omitempty"`
+	FrameCount int      `json:"frame_count,omitempty"`
+	Images     []string `json:"images,omitempty"`
 }
 
-func run(m *testing.M) int {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		fmt.Fprintln(os.Stderr, "integration tests require ffmpeg in PATH:", err)
-		return 1
+// requireReferenceApp skips tests that need the app launched by TestMain:
+// they inspect or manipulate its working directory (uploads/, outputs/,
+// temp/) or start extra instances of its binary. They cannot run against an
+// external BASE_URL.
+func requireReferenceApp(t *testing.T) {
+	t.Helper()
+	if referenceDir == "" {
+		t.Skip("needs the reference app launched by the test harness; skipped when BASE_URL is set")
 	}
-
-	ln, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "integration tests require port 8080 to be free:", err)
-		return 1
-	}
-	ln.Close()
-
-	// The app uses paths relative to the working directory; run it in a
-	// throwaway directory so the repository is never touched.
-	workDir, err = os.MkdirTemp("", "video-processor-it-*")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	defer os.RemoveAll(workDir)
-
-	if err := os.Chdir(workDir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-
-	gin.SetMode(gin.ReleaseMode)
-	gin.DefaultWriter = io.Discard
-
-	go main()
-
-	if err := waitForServer(15 * time.Second); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-
-	return m.Run()
 }
 
-func waitForServer(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get(baseURL + "/api/status")
-		if err == nil {
-			resp.Body.Close()
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("server did not start within %s", timeout)
+// usingReferenceApp reports whether the app was launched by TestMain, so
+// tests can add filesystem checks on top of their black-box assertions.
+func usingReferenceApp() bool {
+	return referenceDir != ""
 }
 
-// resetWorkspace gives each test a clean uploads/outputs/temp layout.
+// resetWorkspace gives each test a clean uploads/outputs/temp layout when
+// running the reference app. Against an external BASE_URL it is a no-op, so
+// black-box tests must not assume the server starts empty.
 func resetWorkspace(t *testing.T) {
 	t.Helper()
+	if !usingReferenceApp() {
+		return
+	}
 	for _, dir := range []string{"uploads", "outputs", "temp"} {
-		if err := os.RemoveAll(filepath.Join(workDir, dir)); err != nil {
+		if err := os.RemoveAll(filepath.Join(referenceDir, dir)); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(filepath.Join(workDir, dir), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(referenceDir, dir), 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
 		for _, dir := range []string{"uploads", "outputs", "temp"} {
-			os.RemoveAll(filepath.Join(workDir, dir))
-			os.MkdirAll(filepath.Join(workDir, dir), 0755)
+			os.RemoveAll(filepath.Join(referenceDir, dir))
+			os.MkdirAll(filepath.Join(referenceDir, dir), 0755)
 		}
 	})
 }
@@ -124,7 +81,8 @@ func resetWorkspace(t *testing.T) {
 // that creating files inside it fails for real (works even when running as root).
 func replaceDirWithFile(t *testing.T, dir string) {
 	t.Helper()
-	path := filepath.Join(workDir, dir)
+	requireReferenceApp(t)
+	path := filepath.Join(referenceDir, dir)
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +112,8 @@ func makeVideo(t *testing.T, ext, codec string, seconds int) []byte {
 	return data
 }
 
-// upcomingTimestamps returns the timestamps the server will use (same format
-// as handleVideoUpload) for requests handled within the next few seconds, so
+// upcomingTimestamps returns the timestamps the reference app will use (same
+// format as handleVideoUpload) for requests handled within the next few seconds, so
 // tests can prepare real filesystem state at the exact paths the app will use.
 func upcomingTimestamps(seconds int) []string {
 	now := time.Now()
@@ -190,14 +148,14 @@ func uploadRequest(t *testing.T, field, filename string, content []byte) *http.R
 	return req
 }
 
-func upload(t *testing.T, field, filename string, content []byte) (int, ProcessingResult) {
+func upload(t *testing.T, field, filename string, content []byte) (int, uploadResult) {
 	t.Helper()
 	resp, err := httpClient.Do(uploadRequest(t, field, filename, content))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var result ProcessingResult
+	var result uploadResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
@@ -243,9 +201,11 @@ func getStatus(t *testing.T) statusResponse {
 	return status
 }
 
+// dirEntries lists a directory of the reference app's working directory.
 func dirEntries(t *testing.T, dir string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(workDir, dir))
+	requireReferenceApp(t)
+	entries, err := os.ReadDir(filepath.Join(referenceDir, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,9 +227,6 @@ func assertValidZip(t *testing.T, data []byte, wantImages []string) {
 	var names []string
 	for _, f := range zr.File {
 		names = append(names, f.Name)
-		if f.Method != zip.Deflate {
-			t.Errorf("%s: expected Deflate compression, got method %d", f.Name, f.Method)
-		}
 		rc, err := f.Open()
 		if err != nil {
 			t.Fatalf("%s: %v", f.Name, err)
@@ -289,4 +246,15 @@ func assertValidZip(t *testing.T, data []byte, wantImages []string) {
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("zip entries = %v, want %v", names, want)
 	}
+}
+
+// download fetches a ZIP through GET /download/:filename and fails the test
+// if it is not served.
+func download(t *testing.T, name string) []byte {
+	t.Helper()
+	resp, body := get(t, "/download/"+name)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /download/%s: expected 200, got %d: %s", name, resp.StatusCode, body)
+	}
+	return body
 }

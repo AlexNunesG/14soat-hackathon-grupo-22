@@ -1,6 +1,10 @@
-package main
+package integration
 
 // Integration tests for POST /upload
+//
+// The first group is black-box and runs against any implementation. The
+// second group (requireReferenceApp) reaches failure paths by manipulating the
+// reference app's working directory and is skipped when BASE_URL is set.
 
 import (
 	"bytes"
@@ -13,6 +17,10 @@ import (
 	"strings"
 	"testing"
 )
+
+// ---------------------------------------------------------------------------
+// Black-box
+// ---------------------------------------------------------------------------
 
 func TestUploadExtractsFramesForEverySupportedFormat(t *testing.T) {
 	cases := []struct {
@@ -62,17 +70,15 @@ func TestUploadExtractsFramesForEverySupportedFormat(t *testing.T) {
 				t.Fatalf("unexpected zip name %q", result.ZipPath)
 			}
 
-			zipData, err := os.ReadFile(filepath.Join(workDir, "outputs", result.ZipPath))
-			if err != nil {
-				t.Fatalf("zip not written to outputs: %v", err)
-			}
-			assertValidZip(t, zipData, result.Images)
+			assertValidZip(t, download(t, result.ZipPath), result.Images)
 
-			if left := dirEntries(t, "uploads"); len(left) != 0 {
-				t.Errorf("uploaded video should be removed after success, found %v", left)
-			}
-			if left := dirEntries(t, "temp"); len(left) != 0 {
-				t.Errorf("temp frames should be cleaned up, found %v", left)
+			if usingReferenceApp() {
+				if left := dirEntries(t, "uploads"); len(left) != 0 {
+					t.Errorf("uploaded video should be removed after success, found %v", left)
+				}
+				if left := dirEntries(t, "temp"); len(left) != 0 {
+					t.Errorf("temp frames should be cleaned up, found %v", left)
+				}
 			}
 		})
 	}
@@ -120,15 +126,17 @@ func TestUploadWithoutVideoFieldIsRejected(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
-		var result ProcessingResult
+		var result uploadResult
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatal(err)
 		}
 		assertUploadError(t, resp.StatusCode, result, http.StatusBadRequest, "Erro ao receber arquivo: ")
 	})
 
-	if left := dirEntries(t, "uploads"); len(left) != 0 {
-		t.Errorf("nothing should be stored, found %v", left)
+	if usingReferenceApp() {
+		if left := dirEntries(t, "uploads"); len(left) != 0 {
+			t.Errorf("nothing should be stored, found %v", left)
+		}
 	}
 }
 
@@ -144,8 +152,10 @@ func TestUploadRejectsUnsupportedExtensions(t *testing.T) {
 		})
 	}
 
-	if left := dirEntries(t, "uploads"); len(left) != 0 {
-		t.Errorf("rejected files must not be stored, found %v", left)
+	if usingReferenceApp() {
+		if left := dirEntries(t, "uploads"); len(left) != 0 {
+			t.Errorf("rejected files must not be stored, found %v", left)
+		}
 	}
 }
 
@@ -160,12 +170,16 @@ func TestUploadOfCorruptVideoReportsFFmpegErrorAndKeepsFile(t *testing.T) {
 		t.Errorf("expected ffmpeg output in message, got %q", result.Message)
 	}
 
+	if !usingReferenceApp() {
+		return
+	}
+
 	// On failure the original upload is kept.
 	stored := dirEntries(t, "uploads")
 	if len(stored) != 1 || !strings.HasSuffix(stored[0], "_broken.mp4") {
 		t.Fatalf("expected the failed upload to be kept, found %v", stored)
 	}
-	kept, err := os.ReadFile(filepath.Join(workDir, "uploads", stored[0]))
+	kept, err := os.ReadFile(filepath.Join(referenceDir, "uploads", stored[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,38 +212,6 @@ func TestUploadOfAudioOnlyFileFails(t *testing.T) {
 	assertUploadError(t, status, result, http.StatusOK, "Erro no ffmpeg: ")
 }
 
-func TestUploadFailsWhenUploadsDirIsNotWritable(t *testing.T) {
-	resetWorkspace(t)
-	replaceDirWithFile(t, "uploads")
-
-	status, result := upload(t, "video", "clip.mp4", makeVideo(t, "mp4", "mpeg4", 1))
-
-	assertUploadError(t, status, result, http.StatusInternalServerError, "Erro ao salvar arquivo: ")
-}
-
-func TestUploadFailsWhenDiskIsFullWhileSaving(t *testing.T) {
-	if _, err := os.Stat("/dev/full"); err != nil {
-		t.Skip("/dev/full not available on this platform")
-	}
-	resetWorkspace(t)
-	video := makeVideo(t, "mp4", "mpeg4", 1)
-
-	// Point the exact destination path at /dev/full: the kernel accepts the
-	// open but every write fails with ENOSPC.
-	for _, ts := range upcomingTimestamps(5) {
-		if err := os.Symlink("/dev/full", filepath.Join(workDir, "uploads", ts+"_full.mp4")); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	status, result := upload(t, "video", "full.mp4", video)
-
-	assertUploadError(t, status, result, http.StatusInternalServerError, "Erro ao salvar arquivo: ")
-	if !strings.Contains(result.Message, "no space left on device") {
-		t.Errorf("expected ENOSPC in message, got %q", result.Message)
-	}
-}
-
 func TestUploadOfVideoWithoutFramesReportsNoFrames(t *testing.T) {
 	resetWorkspace(t)
 
@@ -251,6 +233,9 @@ func TestUploadOfVideoWithoutFramesReportsNoFrames(t *testing.T) {
 	status, result := upload(t, "video", "empty.avi", video)
 
 	assertUploadError(t, status, result, http.StatusOK, "Nenhum frame foi extraído do vídeo")
+	if !usingReferenceApp() {
+		return
+	}
 	if out := dirEntries(t, "outputs"); len(out) != 0 {
 		t.Errorf("no zip should be produced, found %v", out)
 	}
@@ -259,12 +244,51 @@ func TestUploadOfVideoWithoutFramesReportsNoFrames(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Reference implementation only: failures induced through its filesystem
+// ---------------------------------------------------------------------------
+
+func TestUploadFailsWhenUploadsDirIsNotWritable(t *testing.T) {
+	requireReferenceApp(t)
+	resetWorkspace(t)
+	replaceDirWithFile(t, "uploads")
+
+	status, result := upload(t, "video", "clip.mp4", makeVideo(t, "mp4", "mpeg4", 1))
+
+	assertUploadError(t, status, result, http.StatusInternalServerError, "Erro ao salvar arquivo: ")
+}
+
+func TestUploadFailsWhenDiskIsFullWhileSaving(t *testing.T) {
+	requireReferenceApp(t)
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full not available on this platform")
+	}
+	resetWorkspace(t)
+	video := makeVideo(t, "mp4", "mpeg4", 1)
+
+	// Point the exact destination path at /dev/full: the kernel accepts the
+	// open but every write fails with ENOSPC.
+	for _, ts := range upcomingTimestamps(5) {
+		if err := os.Symlink("/dev/full", filepath.Join(referenceDir, "uploads", ts+"_full.mp4")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, result := upload(t, "video", "full.mp4", video)
+
+	assertUploadError(t, status, result, http.StatusInternalServerError, "Erro ao salvar arquivo: ")
+	if !strings.Contains(result.Message, "no space left on device") {
+		t.Errorf("expected ENOSPC in message, got %q", result.Message)
+	}
+}
+
 // Files that match *.png inside the processing directory but cannot be
 // archived make ZIP creation fail.
 func TestUploadFailsWhenAFrameCannotBeArchived(t *testing.T) {
+	requireReferenceApp(t)
 	cases := map[string]func(t *testing.T, path string){
 		"unreadable frame (dangling symlink)": func(t *testing.T, path string) {
-			if err := os.Symlink(filepath.Join(workDir, "nowhere"), path); err != nil {
+			if err := os.Symlink(filepath.Join(referenceDir, "nowhere"), path); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -281,7 +305,7 @@ func TestUploadFailsWhenAFrameCannotBeArchived(t *testing.T) {
 			video := makeVideo(t, "mp4", "mpeg4", 1)
 
 			for _, ts := range upcomingTimestamps(5) {
-				dir := filepath.Join(workDir, "temp", ts)
+				dir := filepath.Join(referenceDir, "temp", ts)
 				if err := os.MkdirAll(dir, 0755); err != nil {
 					t.Fatal(err)
 				}
@@ -302,6 +326,7 @@ func TestUploadFailsWhenAFrameCannotBeArchived(t *testing.T) {
 }
 
 func TestUploadFailsWhenZipCannotBeCreated(t *testing.T) {
+	requireReferenceApp(t)
 	resetWorkspace(t)
 	replaceDirWithFile(t, "outputs")
 
@@ -316,7 +341,7 @@ func TestUploadFailsWhenZipCannotBeCreated(t *testing.T) {
 	}
 }
 
-func assertUploadError(t *testing.T, gotStatus int, result ProcessingResult, wantStatus int, msgPrefix string) {
+func assertUploadError(t *testing.T, gotStatus int, result uploadResult, wantStatus int, msgPrefix string) {
 	t.Helper()
 	if gotStatus != wantStatus {
 		t.Errorf("status = %d, want %d (%+v)", gotStatus, wantStatus, result)

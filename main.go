@@ -2,13 +2,18 @@ package main
 
 import (
 	"archive/zip"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,10 +64,35 @@ func main() {
 
 	r.GET("/api/status", handleStatus)
 
-	fmt.Println("🎬 Servidor iniciado na porta 8080")
-	fmt.Println("📂 Acesse: http://localhost:8080")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-	log.Fatal(r.Run(":8080"))
+	srv := &http.Server{Addr: ":" + port, Handler: r}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Encerra de forma graciosa em SIGINT/SIGTERM, aguardando requisições em andamento.
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	fmt.Printf("🎬 Servidor iniciado na porta %s\n", port)
+	fmt.Printf("📂 Acesse: http://localhost:%s\n", port)
+
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+
+	<-shutdownDone
+	fmt.Println("👋 Servidor encerrado")
 }
 
 func createDirs() {

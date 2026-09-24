@@ -52,14 +52,17 @@ type VideoPage struct {
 	Total int
 }
 
-// Videos holds the read use cases of a user's videos (RF4). Every call is
-// scoped to the calling user (RF3).
+// Videos holds the read use cases of a user's videos (RF4): list, get and
+// download. Every call is scoped to the calling user (RF3).
 type Videos struct {
-	repo VideoRepository
+	repo    VideoRepository
+	storage ObjectStorage
 }
 
 // NewVideos returns the video use cases.
-func NewVideos(repo VideoRepository) *Videos { return &Videos{repo: repo} }
+func NewVideos(repo VideoRepository, storage ObjectStorage) *Videos {
+	return &Videos{repo: repo, storage: storage}
+}
 
 // List returns one page of the owner's videos, newest first. An invalid
 // page yields a *ValidationError.
@@ -95,4 +98,22 @@ func (v *Videos) Get(ctx context.Context, ownerID, id string) (*domain.Video, er
 // 8-4-4-4-12 form, the only one the API hands out.
 func isCanonicalUUID(s string) bool {
 	return len(s) == 36 && uuid.Validate(s) == nil
+}
+
+// Download opens the frames archive of one of the owner's videos; the
+// caller closes it. Unknown, malformed and other users' ids yield an error
+// wrapping ErrNotFound, and a video that is not DONE a *NotReadyError.
+func (v *Videos) Download(ctx context.Context, ownerID, id string) (*domain.Video, *Object, error) {
+	video, err := v.Get(ctx, ownerID, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if video.Status != domain.StatusDone {
+		return nil, nil, &NotReadyError{Status: video.Status}
+	}
+	obj, err := v.storage.Get(ctx, video.ZipKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open frames archive of video %s: %w", id, err)
+	}
+	return video, obj, nil
 }

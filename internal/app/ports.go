@@ -46,11 +46,19 @@ type ObjectStorage interface {
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
 	// Get opens the object at key; the caller closes it. A missing key
 	// yields an error wrapping ErrObjectNotFound.
-	Get(ctx context.Context, key string) (io.ReadCloser, error)
+	Get(ctx context.Context, key string) (*Object, error)
+	// Delete removes the object at key. A missing key is not an error.
+	Delete(ctx context.Context, key string) error
 	// EnsureBucket creates the bucket when it does not exist yet.
 	EnsureBucket(ctx context.Context) error
 	// Ping checks that the storage is reachable and the bucket exists.
 	Ping(ctx context.Context) error
+}
+
+// Object is an open stored object: its content and its size in bytes.
+type Object struct {
+	io.ReadCloser
+	Size int64
 }
 
 // UserRepository persists users.
@@ -105,4 +113,52 @@ type TokenVerifier interface {
 	// malformed, badly signed or expired token yields an error wrapping
 	// ErrInvalidToken.
 	Verify(token string) (userID string, err error)
+}
+
+// UploadRepository persists uploaded videos.
+type UploadRepository interface {
+	// CreateWithMessages inserts the videos and queues the messages in the
+	// outbox, atomically: either all of them are stored or none is. The
+	// outbox relay publishes the messages afterwards (ADR 0004).
+	CreateWithMessages(ctx context.Context, videos []*domain.Video, msgs []Message) error
+}
+
+// ProcessingRepository is what the worker needs to track a video's
+// processing. Every state change is conditional on the current status, so
+// concurrent or repeated deliveries of the same job cannot move a video
+// backwards or out of a final status.
+type ProcessingRepository interface {
+	// GetByID returns the video with the id, whoever owns it, or an error
+	// wrapping ErrNotFound.
+	GetByID(ctx context.Context, id string) (*domain.Video, error)
+	// MarkProcessing moves a PENDING or PROCESSING video to PROCESSING (a
+	// redelivered job restarts the work) and reports whether it did; false
+	// means the video is final (or gone) and must not be processed.
+	MarkProcessing(ctx context.Context, id string, at time.Time) (bool, error)
+	// MarkDone moves a PROCESSING video to DONE with its archive and frame
+	// count, and reports whether it did.
+	MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time) (bool, error)
+	// MarkFailed moves a PENDING or PROCESSING video to FAILED with the
+	// reason, and reports whether it did.
+	MarkFailed(ctx context.Context, id, reason string, at time.Time) (bool, error)
+}
+
+// PublishFunc publishes msgs and returns one error per message, in order:
+// nil when the broker confirmed that message.
+type PublishFunc func(ctx context.Context, msgs []Message) []error
+
+// OutboxStore holds the messages waiting to be published (ADR 0004).
+type OutboxStore interface {
+	// Relay claims up to limit messages that are due, calls publish with
+	// them, removes the published ones and delays the others (with backoff).
+	// Claimed messages are locked until Relay returns, so concurrent relays
+	// (several api replicas) never publish the same row at the same time.
+	// It returns how many messages it claimed.
+	Relay(ctx context.Context, limit int, publish PublishFunc) (int, error)
+}
+
+// MessagePublisher publishes messages to the broker with publisher
+// confirms.
+type MessagePublisher interface {
+	Publish(ctx context.Context, msgs []Message) []error
 }

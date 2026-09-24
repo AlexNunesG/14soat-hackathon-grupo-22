@@ -294,29 +294,33 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 - [x] Enables: `auth_test.go`.
 
 **2.3 Messaging and async processing (RF1, RF2, RT2)**
-- [ ] RabbitMQ topology as code: exchange `videos`, queues `video.process`,
+- [x] RabbitMQ topology as code: exchange `videos`, queues `video.process`,
       `video.notify`, DLX + DLQ, durable queues, persistent messages. → **D2**
-- [ ] Storage bucket bootstrap (SeaweedFS `-bucket` + API `EnsureBucket`, done in 2.1; document in D2). → **D2**
-- [ ] `POST /api/v1/videos`: stream to storage, insert job `PENDING`, publish
+- [x] Storage bucket bootstrap (SeaweedFS `-bucket` + API `EnsureBucket`, done in 2.1; document in D2). → **D2**
+- [x] `POST /api/v1/videos`: stream to storage, insert job `PENDING`, publish
       with publisher confirms, return 202.
-- [ ] Outbox pattern *or* publish-then-commit with reconciliation, so no job is
+- [x] Outbox pattern *or* publish-then-commit with reconciliation, so no job is
       stuck if the broker is down (document the choice in an ADR).
-- [ ] Worker service: prefetch = concurrency, manual ack, `PROCESSING` →
+- [x] Worker service: prefetch = concurrency, manual ack, `PROCESSING` →
       `DONE`/`FAILED`, retries with backoff, DLQ after N attempts, idempotency.
-- [ ] Worker concurrency configurable (goroutine pool) + horizontal replicas
+- [x] Worker concurrency configurable (goroutine pool) + horizontal replicas
       (`docker compose up --scale worker=3`).
-- [ ] Temp files cleaned on success and failure; ffmpeg timeout.
-- [ ] Graceful shutdown in every service (finish/requeue in-flight messages),
+- [x] Temp files cleaned on success and failure; ffmpeg timeout.
+- [x] Graceful shutdown in every service (finish/requeue in-flight messages),
       with unit tests.
-- [ ] Enables: `upload_test.go`, `processing_test.go`,
-      `concurrency_test.go`, `resilience_test.go`.
+- [x] Enables: `upload_test.go`, `processing_test.go`,
+      `concurrency_test.go`, `resilience_test.go` — and `status_test.go`,
+      `download_test.go`, since download landed here too (processing tests
+      check zips through it). Design: [ADR 0004](../docs/adr/0004-transactional-outbox.md),
+      [`docs/messaging.md`](../docs/messaging.md); compose runs 2 worker
+      replicas × concurrency 2.
 
 **2.4 Status listing and download (RF4)**
 - [x] `GET /api/v1/videos` (paginated), `GET /api/v1/videos/{id}` (done early in 2.2: the auth tests need them).
-- [ ] `GET /api/v1/videos/{id}/download` (stream or presigned URL).
+- [x] `GET /api/v1/videos/{id}/download` (streamed; done in 2.3).
 - [ ] Redis cache for the list (invalidate on status change).
 - [ ] Simple web UI (login, upload, status table with polling, download).
-- [ ] Enables: `status_test.go`, `download_test.go`.
+- [x] Enables: `status_test.go`, `download_test.go` (enabled in 2.3).
 
 **2.5 Notifications (RF5)**
 - [ ] Worker publishes `video.failed` (and `video.processed`) events.
@@ -347,6 +351,9 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 ### Phase 5 — Quality (RT4)
 - [ ] Coverage report in CI; target ≥ 80% on domain/use cases.
 - [ ] Static analysis: `golangci-lint`, `govulncheck`; optional SonarCloud.
+- [ ] Consider quorum queues with `x-delivery-limit` for `video.process`: a
+      job that crashes the worker every time (e.g. OOM) is redelivered forever
+      on a classic queue (found in 2.3).
 
 ### Phase 6 — CI/CD (RT5)
 - [ ] CI: lint, vet, unit tests, then `docker compose up` and the integration

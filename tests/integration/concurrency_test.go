@@ -34,7 +34,6 @@ const parallelPollInterval = 150 * time.Millisecond
 // videos in flight, so the stack's processing slots are free for these N
 // videos and the check does not depend on other tests' load.
 func TestUploadsAreProcessedInParallel(t *testing.T) {
-	notImplemented(t)
 	const n = 4
 	_, token := registerAndLogin(t)
 	data := makeSlowVideo(t, slowVideoSeconds)
@@ -78,7 +77,6 @@ func TestUploadsAreProcessedInParallel(t *testing.T) {
 // same instant; both users' videos are processed and each user gets the
 // frames of their own videos.
 func TestUploadsFromSeveralUsersAtOnceAllComplete(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	type upload struct {
 		token string

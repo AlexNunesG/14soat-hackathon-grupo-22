@@ -13,23 +13,32 @@ import (
 	"video-processor/internal/domain"
 )
 
-// Videos is the PostgreSQL app.VideoRepository. Zero FrameCount, ZipKey
+// Videos is the PostgreSQL video repository: app.VideoRepository,
+// app.UploadRepository and app.ProcessingRepository. Zero FrameCount, ZipKey
 // and ErrorMessage are stored as NULL.
 type Videos struct {
-	db Querier
+	db DB
 }
 
-var _ app.VideoRepository = (*Videos)(nil)
+var (
+	_ app.VideoRepository      = (*Videos)(nil)
+	_ app.UploadRepository     = (*Videos)(nil)
+	_ app.ProcessingRepository = (*Videos)(nil)
+)
 
 // NewVideos returns the video repository over db.
-func NewVideos(db Querier) *Videos { return &Videos{db: db} }
+func NewVideos(db DB) *Videos { return &Videos{db: db} }
 
 const videoColumns = `id, user_id, original_name, storage_key, zip_key, status,
 	frame_count, error_message, created_at, updated_at`
 
 // Create inserts v.
 func (r *Videos) Create(ctx context.Context, v *domain.Video) error {
-	_, err := r.db.Exec(ctx,
+	return insertVideo(ctx, r.db, v)
+}
+
+func insertVideo(ctx context.Context, db Querier, v *domain.Video) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO videos (`+videoColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		v.ID, v.OwnerID, v.OriginalName, v.StorageKey, nullString(v.ZipKey), string(v.Status),
 		nullInt(v.FrameCount), nullString(v.ErrorMessage), v.CreatedAt, v.UpdatedAt)
@@ -37,6 +46,71 @@ func (r *Videos) Create(ctx context.Context, v *domain.Video) error {
 		return fmt.Errorf("postgres: insert video: %w", err)
 	}
 	return nil
+}
+
+// CreateWithMessages inserts the videos and queues the messages in the
+// outbox in one transaction (ADR 0004).
+func (r *Videos) CreateWithMessages(ctx context.Context, videos []*domain.Video, msgs []app.Message) error {
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		for _, v := range videos {
+			if err := insertVideo(ctx, tx, v); err != nil {
+				return err
+			}
+		}
+		return enqueue(ctx, tx, msgs)
+	})
+}
+
+// GetByID returns the video with the id, whoever owns it. Unknown and
+// malformed ids yield an error wrapping app.ErrNotFound.
+func (r *Videos) GetByID(ctx context.Context, id string) (*domain.Video, error) {
+	if !validUUID(id) {
+		return nil, fmt.Errorf("postgres: video %q: %w", id, app.ErrNotFound)
+	}
+	v, err := scanVideo(r.db.QueryRow(ctx, `SELECT `+videoColumns+` FROM videos WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("postgres: video %q: %w", id, app.ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: select video: %w", err)
+	}
+	return v, nil
+}
+
+// MarkProcessing moves a PENDING or PROCESSING video to PROCESSING and
+// reports whether it did.
+func (r *Videos) MarkProcessing(ctx context.Context, id string, at time.Time) (bool, error) {
+	return r.update(ctx, "mark processing", `
+		UPDATE videos SET status = 'PROCESSING', updated_at = $2
+		WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')`, id, at)
+}
+
+// MarkDone moves a PROCESSING video to DONE and reports whether it did.
+func (r *Videos) MarkDone(ctx context.Context, id, zipKey string, frameCount int, at time.Time) (bool, error) {
+	return r.update(ctx, "mark done", `
+		UPDATE videos SET status = 'DONE', zip_key = $2, frame_count = $3, updated_at = $4
+		WHERE id = $1 AND status = 'PROCESSING'`, id, zipKey, frameCount, at)
+}
+
+// MarkFailed moves a PENDING or PROCESSING video to FAILED and reports
+// whether it did.
+func (r *Videos) MarkFailed(ctx context.Context, id, reason string, at time.Time) (bool, error) {
+	return r.update(ctx, "mark failed", `
+		UPDATE videos SET status = 'FAILED', error_message = $2, updated_at = $3
+		WHERE id = $1 AND status IN ('PENDING', 'PROCESSING')`, id, reason, at)
+}
+
+// update runs a conditional UPDATE of one video and reports whether it
+// changed a row.
+func (r *Videos) update(ctx context.Context, op, sql, id string, args ...any) (bool, error) {
+	if !validUUID(id) {
+		return false, nil
+	}
+	tag, err := r.db.Exec(ctx, sql, append([]any{id}, args...)...)
+	if err != nil {
+		return false, fmt.Errorf("postgres: %s: %w", op, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // GetByIDForOwner returns the owner's video with the id. Unknown and

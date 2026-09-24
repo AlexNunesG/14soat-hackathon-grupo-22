@@ -114,6 +114,9 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = io.WriteString(w, "hello")
 		}
+	case key != "" && r.Method == http.MethodDelete:
+		delete(f.objects, key)
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		s3Error(w, http.StatusNotImplemented, "NotImplemented")
 	}
@@ -198,6 +201,28 @@ func TestPutAndGet(t *testing.T) {
 	body, err := io.ReadAll(rc)
 	if err != nil || string(body) != "hello" {
 		t.Errorf("body %q, err %v", body, err)
+	}
+	if rc.Size != 5 {
+		t.Errorf("size %d, want 5", rc.Size)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	ctx := context.Background()
+	c, fake := newFake(t, true)
+	if err := c.Put(ctx, "k", strings.NewReader("hello"), 5, "video/mp4"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // a missing key is not an error
+		if err := c.Delete(ctx, "k"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fake.objects["k"] {
+		t.Error("object still exists")
+	}
+	if _, err := c.Get(ctx, "k"); !errors.Is(err, app.ErrObjectNotFound) {
+		t.Errorf("Get after Delete: err = %v, want ErrObjectNotFound", err)
 	}
 }
 

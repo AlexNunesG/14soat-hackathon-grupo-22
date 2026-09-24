@@ -45,8 +45,14 @@ services:
       start_period: 30s
       start_interval: 1s
 
+  # The topology (exchanges, queues, retry and dead-letter queues) is
+  # declared by the api and the worker on connect; the same topology is in
+  # deploy/rabbitmq/definitions.json for manual import.
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    # A fixed hostname keeps the node name (rabbit@rabbitmq), so durable
+    # queues and persistent messages in the volume survive a re-create.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-video}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-video}
@@ -153,6 +159,10 @@ services:
       # bytes) anywhere else. Every api replica must share it.
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
       JWT_TTL: ${JWT_TTL:-1h}
+      # Upload limit (default 1 GiB) and the outbox relay (ADR 0004).
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-1073741824}
+      OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1s}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
     ports:
       - "8080:8080"
     depends_on:
@@ -178,10 +188,54 @@ services:
     # Longer than SHUTDOWN_TIMEOUT, so in-flight requests can finish.
     stop_grace_period: 20s
 
-  # worker: arrives with its code in Phase 2.3 (consumes video.process,
-  #   ffmpeg + zip; image with ffmpeg; >= 2 processing slots in total, e.g.
-  #   WORKER_CONCURRENCY and/or `deploy.replicas`). The integration suite
-  #   restarts it by the service name "worker".
+  # Processing workers (RF1): WORKER_REPLICAS containers x WORKER_CONCURRENCY
+  # jobs each = 2 x 2 = 4 processing slots by default (the integration
+  # suite needs at least 2). Scale with `docker compose up --scale worker=N`.
+  # The integration suite restarts this service by the name "worker".
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker.Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-}
+    image: video-processor/worker:dev
+    environment:
+      HEALTH_ADDR: ":8081"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${WORKER_SHUTDOWN_TIMEOUT:-15s}
+      READINESS_TIMEOUT: ${READINESS_TIMEOUT:-2s}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-0}
+      FFMPEG_TIMEOUT: ${FFMPEG_TIMEOUT:-10m}
+      DATABASE_URL: postgres://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:-video}@postgres:5432/${POSTGRES_DB:-video_processor}?sslmode=disable
+      AMQP_URL: amqp://${RABBITMQ_USER:-video}:${RABBITMQ_PASSWORD:-video}@rabbitmq:5672/
+      S3_ENDPOINT: storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-dev-access-key}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-dev-secret-key}
+      S3_BUCKET: ${S3_BUCKET:-videos}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: "false"
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    # Longer than SHUTDOWN_TIMEOUT, so in-flight jobs can finish.
+    stop_grace_period: 20s
+
   # notifier: arrives with its code in Phase 2.5 (consumes failure events,
   #   sends e-mail through mailhog:1025).
 

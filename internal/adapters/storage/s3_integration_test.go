@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/minio/minio-go/v7"
-
 	"video-processor/internal/app"
 )
 
@@ -77,10 +75,19 @@ func TestAgainstRealS3(t *testing.T) {
 		t.Errorf("missing key: err = %v, want ErrObjectNotFound", err)
 	}
 
-	// Clean up the test bucket.
-	if err := c.s3.RemoveObject(ctx, c.bucket, "videos/test/in.mp4", minio.RemoveObjectOptions{}); err != nil {
-		t.Logf("cleanup: %v", err)
+	if rc.Size != int64(len(want)) {
+		t.Errorf("size %d, want %d", rc.Size, len(want))
 	}
+	for range 2 { // deleting a missing key is not an error
+		if err := c.Delete(ctx, "videos/test/in.mp4"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.Get(ctx, "videos/test/in.mp4"); !errors.Is(err, app.ErrObjectNotFound) {
+		t.Errorf("deleted key: err = %v, want ErrObjectNotFound", err)
+	}
+
+	// Clean up the test bucket.
 	if err := c.s3.RemoveBucket(ctx, c.bucket); err != nil {
 		t.Logf("cleanup: %v", err)
 	}

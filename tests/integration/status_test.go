@@ -13,7 +13,6 @@ import (
 )
 
 func TestListShowsOnlyTheCallersVideos(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, aliceToken := registerAndLogin(t)
 	_, bobToken := registerAndLogin(t)
@@ -40,7 +39,6 @@ func TestListShowsOnlyTheCallersVideos(t *testing.T) {
 }
 
 func TestListIsNewestFirst(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	data := makeMP4(t, 1)
@@ -78,7 +76,6 @@ func assertNewestFirst(t *testing.T, items []video) {
 }
 
 func TestListPagination(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	data := makeMP4(t, 1)
@@ -115,7 +112,6 @@ func TestListPagination(t *testing.T) {
 }
 
 func TestListInvalidPaginationIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	for _, query := range []string{
@@ -137,7 +133,6 @@ func TestListInvalidPaginationIsRejected(t *testing.T) {
 }
 
 func TestGetVideoMatchesListItem(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	uploaded := uploadOne(t, token, "holiday.mp4", makeMP4(t, 1))
@@ -155,7 +150,6 @@ func TestGetVideoMatchesListItem(t *testing.T) {
 }
 
 func TestGetVideoNotFound(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, ownerToken := registerAndLogin(t)
 	_, otherToken := registerAndLogin(t)
@@ -175,7 +169,6 @@ func TestGetVideoNotFound(t *testing.T) {
 }
 
 func TestDownloadURLOnlyWhenDone(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	// decodeVideo (used by every helper that reads a video) fails when

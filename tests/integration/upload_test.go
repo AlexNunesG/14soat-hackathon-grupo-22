@@ -11,7 +11,6 @@ import (
 )
 
 func TestUploadSingleVideoIsAccepted(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 
@@ -26,7 +25,6 @@ func TestUploadSingleVideoIsAccepted(t *testing.T) {
 }
 
 func TestUploadSeveralVideosInOneRequest(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	data := makeMP4(t, 1)
@@ -47,7 +45,6 @@ func TestUploadSeveralVideosInOneRequest(t *testing.T) {
 }
 
 func TestUploadWithoutFileIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	data := makeMP4(t, 1)
@@ -78,7 +75,6 @@ func TestUploadWithoutFileIsRejected(t *testing.T) {
 }
 
 func TestUploadUnsupportedExtensionIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	data := makeMP4(t, 1)
 
@@ -133,7 +129,6 @@ func assertUnsupportedFormat(t *testing.T, resp *http.Response, body []byte) {
 }
 
 func TestUploadSupportedFormatsAreAcceptedInAnyCase(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	// Only the extension is validated at upload time, so any bytes will do.

@@ -11,7 +11,6 @@ import (
 )
 
 func TestProcessingReachesDone(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	uploaded := uploadOne(t, token, "holiday.mp4", makeMP4(t, 2))
@@ -27,7 +26,6 @@ func TestProcessingReachesDone(t *testing.T) {
 }
 
 func TestProcessingFrameCountFollowsDuration(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	// At 1 fps a video of N whole seconds yields N frames.
 	for _, seconds := range []int{1, 3, 5} {
@@ -49,7 +47,6 @@ func TestProcessingFrameCountFollowsDuration(t *testing.T) {
 }
 
 func TestProcessingEverySupportedFormat(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	const seconds = 3
 	cases := []struct {
@@ -83,7 +80,6 @@ func TestProcessingEverySupportedFormat(t *testing.T) {
 }
 
 func TestProcessingUndecodableVideoFails(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	cases := []struct {
 		name string

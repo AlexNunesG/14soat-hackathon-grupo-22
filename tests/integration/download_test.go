@@ -10,7 +10,6 @@ import (
 )
 
 func TestDownloadDoneVideoReturnsZip(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	cases := []struct {
@@ -57,7 +56,6 @@ func TestDownloadDoneVideoReturnsZip(t *testing.T) {
 // The test then waits for DONE and checks the same download succeeds, so
 // the 409 was about readiness.
 func TestDownloadBeforeDoneIsNotReady(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	data := ffmpeg(t, "long.mp4",
@@ -76,7 +74,6 @@ func TestDownloadBeforeDoneIsNotReady(t *testing.T) {
 }
 
 func TestDownloadFailedVideoIsNotReady(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, token := registerAndLogin(t)
 	uploaded := uploadOne(t, token, "broken.avi", corruptVideo())
@@ -88,7 +85,6 @@ func TestDownloadFailedVideoIsNotReady(t *testing.T) {
 }
 
 func TestDownloadNotFound(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	_, ownerToken := registerAndLogin(t)
 	_, otherToken := registerAndLogin(t)

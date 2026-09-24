@@ -18,7 +18,7 @@ import (
 )
 
 // Config is the configuration of the api service. Sections are shared with
-// the worker and notifier as they arrive.
+// the worker (Worker) and the notifier as they arrive.
 type Config struct {
 	HTTP     HTTP
 	LogLevel slog.Level
@@ -26,6 +26,56 @@ type Config struct {
 	Broker   Broker
 	Storage  Storage
 	Auth     Auth
+	Upload   Upload
+	Outbox   Outbox
+	// ReadinessTimeout bounds each dependency check of GET /readyz.
+	ReadinessTimeout time.Duration
+}
+
+// Upload configures POST /api/v1/videos.
+type Upload struct {
+	// MaxBytes limits the size of an upload request (MAX_UPLOAD_BYTES).
+	MaxBytes int64
+	// TempDir is where uploads are spooled while received
+	// (UPLOAD_TEMP_DIR; "" is the system's temp dir).
+	TempDir string
+}
+
+// Outbox configures the relay that publishes the outbox (ADR 0004).
+type Outbox struct {
+	// Interval is the relay's poll interval (OUTBOX_POLL_INTERVAL); uploads
+	// also wake it up at once.
+	Interval time.Duration
+	// BatchSize is the number of messages per relay transaction
+	// (OUTBOX_BATCH_SIZE, 1 to 500).
+	BatchSize int
+}
+
+// Worker is the configuration of the worker service.
+type Worker struct {
+	LogLevel slog.Level
+	Database Database
+	Broker   Broker
+	Storage  Storage
+	// HealthAddr is where GET /healthz and /readyz are served
+	// (HEALTH_ADDR, host:port).
+	HealthAddr string
+	// Concurrency is the number of videos processed at the same time, and
+	// the prefetch count (WORKER_CONCURRENCY).
+	Concurrency int
+	// MaxAttempts is how many times a job is tried before its video ends
+	// FAILED (WORKER_MAX_ATTEMPTS; 0 means as many as the retry queues
+	// allow).
+	MaxAttempts int
+	// FFmpegTimeout bounds the frame extraction of one video
+	// (FFMPEG_TIMEOUT).
+	FFmpegTimeout time.Duration
+	// TempDir is where jobs keep their files (WORKER_TEMP_DIR; "" is the
+	// system's temp dir).
+	TempDir string
+	// ShutdownTimeout is how long in-flight jobs may finish after
+	// SIGINT/SIGTERM before they are requeued (SHUTDOWN_TIMEOUT).
+	ShutdownTimeout time.Duration
 	// ReadinessTimeout bounds each dependency check of GET /readyz.
 	ReadinessTimeout time.Duration
 }
@@ -86,6 +136,15 @@ var defaults = map[string]string{
 	"S3_USE_SSL":        "false",
 	"READINESS_TIMEOUT": "2s",
 	"JWT_TTL":           "1h",
+
+	"MAX_UPLOAD_BYTES":     "1073741824", // 1 GiB
+	"OUTBOX_POLL_INTERVAL": "1s",
+	"OUTBOX_BATCH_SIZE":    "100",
+
+	"HEALTH_ADDR":         ":8081",
+	"WORKER_CONCURRENCY":  "2",
+	"WORKER_MAX_ATTEMPTS": "0",
+	"FFMPEG_TIMEOUT":      "10m",
 }
 
 // FromEnv loads the configuration from the process environment.
@@ -115,10 +174,51 @@ func Load(getenv func(string) string) (Config, error) {
 			JWTSecret: l.secret("JWT_SECRET", MinJWTSecretLength),
 			TokenTTL:  l.durationAtLeast("JWT_TTL", time.Second),
 		},
+		Upload: Upload{
+			MaxBytes: l.int64Between("MAX_UPLOAD_BYTES", 1, 1<<40),
+			TempDir:  l.str("UPLOAD_TEMP_DIR"),
+		},
+		Outbox: Outbox{
+			Interval:  l.duration("OUTBOX_POLL_INTERVAL"),
+			BatchSize: int(l.int64Between("OUTBOX_BATCH_SIZE", 1, 500)),
+		},
 		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
 	}
 	if err := errors.Join(l.errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// WorkerFromEnv loads the worker configuration from the process
+// environment.
+func WorkerFromEnv() (Worker, error) { return LoadWorker(os.Getenv) }
+
+// LoadWorker is Load for the worker service.
+func LoadWorker(getenv func(string) string) (Worker, error) {
+	l := loader{getenv: getenv}
+	cfg := Worker{
+		LogLevel: l.logLevel("LOG_LEVEL"),
+		Database: Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
+		Broker:   Broker{URL: l.url("AMQP_URL", "amqp", "amqps")},
+		Storage: Storage{
+			Endpoint:  l.str("S3_ENDPOINT"),
+			AccessKey: l.required("S3_ACCESS_KEY"),
+			SecretKey: l.required("S3_SECRET_KEY"),
+			Bucket:    l.bucket("S3_BUCKET"),
+			Region:    l.str("S3_REGION"),
+			UseSSL:    l.boolean("S3_USE_SSL"),
+		},
+		HealthAddr:       l.addr("HEALTH_ADDR"),
+		Concurrency:      int(l.int64Between("WORKER_CONCURRENCY", 1, 256)),
+		MaxAttempts:      int(l.int64Between("WORKER_MAX_ATTEMPTS", 0, 100)),
+		FFmpegTimeout:    l.duration("FFMPEG_TIMEOUT"),
+		TempDir:          l.str("WORKER_TEMP_DIR"),
+		ShutdownTimeout:  l.duration("SHUTDOWN_TIMEOUT"),
+		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
+	}
+	if err := errors.Join(l.errs...); err != nil {
+		return Worker{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
 }
@@ -211,6 +311,15 @@ func (l *loader) secret(key string, minLen int) []byte {
 		l.fail(key, "must have at least %d bytes, got %d", minLen, len(v))
 	}
 	return []byte(v)
+}
+
+func (l *loader) int64Between(key string, lo, hi int64) int64 {
+	v := l.str(key)
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < lo || n > hi {
+		l.fail(key, "%q is not an integer between %d and %d", v, lo, hi)
+	}
+	return n
 }
 
 func (l *loader) boolean(key string) bool {

@@ -111,18 +111,27 @@ func (c *Client) Put(ctx context.Context, key string, r io.Reader, size int64, c
 
 // Get opens the object at key. A missing key yields an error wrapping
 // app.ErrObjectNotFound.
-func (c *Client) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+func (c *Client) Get(ctx context.Context, key string) (*app.Object, error) {
 	obj, err := c.s3.GetObject(ctx, c.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, c.wrap("get", key, err)
 	}
 	// GetObject is lazy: Stat makes the request, so a missing key fails
 	// here instead of on the caller's first Read.
-	if _, err := obj.Stat(); err != nil {
+	info, err := obj.Stat()
+	if err != nil {
 		obj.Close()
 		return nil, c.wrap("get", key, err)
 	}
-	return obj, nil
+	return &app.Object{ReadCloser: obj, Size: info.Size}, nil
+}
+
+// Delete removes the object at key. S3 reports success for a missing key.
+func (c *Client) Delete(ctx context.Context, key string) error {
+	if err := c.s3.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return c.wrap("delete", key, err)
+	}
+	return nil
 }
 
 // EnsureBucket creates the bucket when it does not exist. Concurrent

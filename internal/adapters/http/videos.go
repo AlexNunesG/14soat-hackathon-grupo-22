@@ -17,6 +17,7 @@ import (
 type VideoService interface {
 	List(ctx context.Context, ownerID string, page app.Page) (app.VideoPage, error)
 	Get(ctx context.Context, ownerID, id string) (*domain.Video, error)
+	Download(ctx context.Context, ownerID, id string) (*domain.Video, *app.Object, error)
 }
 
 // videoBody is the Video schema. frame_count and error_message are null
@@ -122,11 +123,4 @@ func getVideo(log *slog.Logger, videos VideoService) gin.HandlerFunc {
 			writeAppError(c, log, err)
 		}
 	}
-}
-
-// notImplemented answers routes whose behavior arrives in a later phase
-// (upload: PLAN.md 2.3, download: 2.4). They already sit behind the auth
-// middleware.
-func notImplemented(c *gin.Context) {
-	WriteError(c, http.StatusNotImplemented, CodeInternal, "not implemented yet")
 }

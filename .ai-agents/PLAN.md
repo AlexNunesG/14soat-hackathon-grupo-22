@@ -95,7 +95,7 @@ concepts from the course.
    ┌───────────────────┼─────────────────────────────────┐
    ▼                   ▼                                 ▼
 ┌───────┐       ┌────────────┐                    ┌────────────┐
-│ MinIO │       │ PostgreSQL │◀── status updates ─│  RabbitMQ  │
+│  S3*  │       │ PostgreSQL │◀── status updates ─│  RabbitMQ  │
 │ (S3)  │       └────────────┘                    └─────┬──────┘
 └───▲───┘              ▲   ▲ cache                      │ consume (N replicas,
     │                  │   └── Redis                    │ prefetch, manual ack)
@@ -123,7 +123,8 @@ Key decisions (record each as an ADR in `docs/adr/`):
 - **Async processing via queue** → RF1 (N workers in parallel) and RF2 (durable
   queue + persistent messages + manual ack + DLQ; API only acks the upload after
   the message is confirmed by the broker — publisher confirms).
-- **Object storage (MinIO/S3)** instead of local disk → stateless API/workers → RT2.
+- **Object storage (S3 API; SeaweedFS in compose, see ADR 0003 — MinIO no longer
+  publishes images)** instead of local disk → stateless API/workers → RT2.
 - **PostgreSQL** as source of truth for users and jobs → RT1; **Redis** for
   status-list cache and rate limiting (optional).
 - **Idempotent worker**: job id as message id; skip if job already `DONE`;
@@ -260,20 +261,23 @@ every test it makes pass and tick the items here. If a test contradicts the
 challenge PDF, fix the test first in a separate PR (Ground rule 2).
 
 **2.1 Foundation**
-- [ ] `deploy/docker-compose.yml` with the infra the tests need: postgres,
-      redis, rabbitmq (management), minio, mailhog. `.env.example`, no secrets
+- [x] `deploy/docker-compose.yml` with the infra the tests need: postgres,
+      redis, rabbitmq (management), storage (SeaweedFS S3, ADR 0003), mailhog,
+      plus the `api` service (worker/notifier join in 2.3/2.5). `.env.example`, no secrets
       committed. Note: once this file exists, `go test ./...` (and CI) starts
       the stack with `docker compose up --build --wait` and waits for
       `/healthz`, so the api service must exist and be healthy from this PR
       on. The stack must provide ≥2 processing slots, a `worker` service,
       API on :8080 and MailHog on :8025 (see `tests/integration/README.md`).
-- [ ] Domain package: `User`, `Video`/`Job`, `JobStatus`, supported-format
+- [x] Domain package: `User`, `Video`/`Job`, `JobStatus`, supported-format
       validation.
-- [ ] Ports + adapters: `FrameExtractor` (ffmpeg, context + timeout, stderr
-      capture), `Archiver` (zip), `Storage` (MinIO/S3), `JobRepository`,
-      `UserRepository`, `Publisher`/`Consumer`, `Mailer`.
-- [ ] Unit tests for domain and adapters (table-driven, fakes for ports).
-- [ ] Enables: `health_test.go`.
+- [x] Ports + adapters: `FrameExtractor` (ffmpeg, context + timeout, stderr
+      capture), `Archiver` (zip), `ObjectStorage` (S3), readiness probes for
+      Postgres and RabbitMQ, `/healthz` + `/readyz`, config, logging.
+      Repositories, publisher/consumer and mailer arrive with the steps that
+      use them (2.2, 2.3, 2.5).
+- [x] Unit tests for domain and adapters (table-driven, fakes for ports).
+- [x] Enables: `health_test.go`.
 
 **2.2 Persistence and authentication (RF3, RT1)**
 - [ ] `db/migrations/` with versioned SQL (golang-migrate or goose):
@@ -290,7 +294,7 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 **2.3 Messaging and async processing (RF1, RF2, RT2)**
 - [ ] RabbitMQ topology as code: exchange `videos`, queues `video.process`,
       `video.notify`, DLX + DLQ, durable queues, persistent messages. → **D2**
-- [ ] MinIO bucket bootstrap script. → **D2**
+- [ ] Storage bucket bootstrap (SeaweedFS `-bucket` + API `EnsureBucket`, done in 2.1; document in D2). → **D2**
 - [ ] `POST /api/v1/videos`: stream to storage, insert job `PENDING`, publish
       with publisher confirms, return 202.
 - [ ] Outbox pattern *or* publish-then-commit with reconciliation, so no job is
@@ -359,7 +363,7 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       → **D1**
 - [ ] `docs/adr/` with the decisions from §4 and §5.
 - [ ] DB and resource scripts referenced from the README (migrations, RabbitMQ
-      definitions, MinIO bucket). → **D2**
+      definitions, storage bucket). → **D2**
 - [ ] Final GitHub repository link(s) collected for submission. → **D3**
 - [ ] Video script/outline (≤ 10 min): docs → architecture → live demo
       (multiple uploads, scaling workers, status list, download, failure

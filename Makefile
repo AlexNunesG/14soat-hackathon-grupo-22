@@ -13,7 +13,7 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 .DEFAULT_GOAL := help
 
 .PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down logs compose-file check clean
+	up down logs docker-build compose-file check clean
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -68,14 +68,17 @@ compose-file:
 		exit 1; \
 	fi
 
-up: compose-file ## Start the local stack and wait until it is healthy
-	$(COMPOSE) up -d --wait
+up: compose-file ## Build and start the local stack, wait until it is healthy
+	$(COMPOSE) up -d --build --wait
 
 down: compose-file ## Stop the local stack and remove its volumes
 	$(COMPOSE) down -v
 
 logs: compose-file ## Follow the local stack logs
 	$(COMPOSE) logs -f
+
+docker-build: compose-file ## Build the service images of the local stack
+	$(COMPOSE) build
 
 check: lint test ## Run everything CI runs; use before pushing
 

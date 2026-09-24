@@ -9,7 +9,6 @@ import (
 )
 
 func TestHealthzReturnsOK(t *testing.T) {
-	notImplemented(t)
 	resp, body := get(t, "/healthz")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /healthz: expected 200, got %d: %s", resp.StatusCode, body)
@@ -24,7 +23,6 @@ func TestHealthzReturnsOK(t *testing.T) {
 }
 
 func TestReadyzReportsDependencies(t *testing.T) {
-	notImplemented(t)
 	resp, body := get(t, "/readyz")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /readyz: expected 200, got %d: %s", resp.StatusCode, body)

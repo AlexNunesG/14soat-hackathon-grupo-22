@@ -318,8 +318,8 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 **2.4 Status listing and download (RF4)**
 - [x] `GET /api/v1/videos` (paginated), `GET /api/v1/videos/{id}` (done early in 2.2: the auth tests need them).
 - [x] `GET /api/v1/videos/{id}/download` (streamed; done in 2.3).
-- [ ] Redis cache for the list (invalidate on status change).
-- [ ] Simple web UI (login, upload, status table with polling, download).
+- [x] Redis cache for the list: per-user version key bumped on every change (api + worker), best-effort with Postgres fallback ([`docs/cache.md`](../docs/cache.md)).
+- [x] Simple web UI at `GET /` (embedded; register/login, upload, status table with polling, download).
 - [x] Enables: `status_test.go`, `download_test.go` (enabled in 2.3).
 
 **2.5 Notifications (RF5)**

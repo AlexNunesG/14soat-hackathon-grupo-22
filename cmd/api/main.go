@@ -23,6 +23,7 @@ import (
 	httpapi "video-processor/internal/adapters/http"
 	"video-processor/internal/adapters/postgres"
 	"video-processor/internal/adapters/rabbitmq"
+	rediscache "video-processor/internal/adapters/redis"
 	"video-processor/internal/adapters/storage"
 	"video-processor/internal/app"
 	"video-processor/internal/platform/config"
@@ -127,6 +128,23 @@ func run() error {
 	relay := app.NewOutboxRelay(postgres.NewOutbox(db), publisher, log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
 	videos := postgres.NewVideos(db)
 
+	// The video list cache (docs/cache.md) is optional and best effort:
+	// it is not a readiness check, and Redis errors fall back to Postgres.
+	var videoOpts []app.VideosOption
+	uploadOpts := []app.UploadsOption{app.WithUploadLogger(log), app.OnEnqueued(relay.Notify)}
+	if cfg.Cache.Enabled() {
+		cache, err := rediscache.New(cfg.Cache.URL, cfg.Cache.TTL)
+		if err != nil {
+			return err
+		}
+		defer cache.Close()
+		videoOpts = append(videoOpts, app.WithListCache(cache, log))
+		uploadOpts = append(uploadOpts, app.WithUploadListInvalidator(cache))
+		log.Info("video list cache enabled", slog.Duration("ttl", cfg.Cache.TTL))
+	} else {
+		log.Info("video list cache disabled (REDIS_URL is empty)")
+	}
+
 	handler := httpapi.NewRouter(httpapi.Options{
 		Logger: log,
 		Checks: []httpapi.Check{
@@ -134,14 +152,14 @@ func run() error {
 			{Name: "broker", Pinger: broker},
 			{Name: "storage", Pinger: store},
 		},
-		CheckTimeout: cfg.ReadinessTimeout,
-		Auth:         app.NewAuth(postgres.NewUsers(db), hasher, tokens),
-		Tokens:       tokens,
-		Videos:       app.NewVideos(videos, store),
-		Uploads: app.NewUploads(videos, store,
-			app.WithUploadLogger(log), app.OnEnqueued(relay.Notify)),
+		CheckTimeout:   cfg.ReadinessTimeout,
+		Auth:           app.NewAuth(postgres.NewUsers(db), hasher, tokens),
+		Tokens:         tokens,
+		Videos:         app.NewVideos(videos, store, videoOpts...),
+		Uploads:        app.NewUploads(videos, store, uploadOpts...),
 		MaxUploadBytes: cfg.Upload.MaxBytes,
 		UploadTempDir:  cfg.Upload.TempDir,
+		WebUI:          true,
 	})
 
 	// The relay outlives the HTTP server, so the jobs of the last uploads

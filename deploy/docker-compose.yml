@@ -163,6 +163,9 @@ services:
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-1073741824}
       OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1s}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
+      # Cache of GET /api/v1/videos (docs/cache.md); empty REDIS_URL disables it.
+      REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
+      CACHE_TTL: ${CACHE_TTL:-30s}
     ports:
       - "8080:8080"
     depends_on:
@@ -215,12 +218,16 @@ services:
       S3_BUCKET: ${S3_BUCKET:-videos}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_USE_SSL: "false"
+      # The worker invalidates the api's list cache on every status change.
+      REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
     deploy:
       replicas: ${WORKER_REPLICAS:-2}
     depends_on:
       migrate:
         condition: service_completed_successfully
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy

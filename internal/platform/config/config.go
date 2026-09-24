@@ -28,6 +28,7 @@ type Config struct {
 	Auth     Auth
 	Upload   Upload
 	Outbox   Outbox
+	Cache    Cache
 	// ReadinessTimeout bounds each dependency check of GET /readyz.
 	ReadinessTimeout time.Duration
 }
@@ -51,12 +52,27 @@ type Outbox struct {
 	BatchSize int
 }
 
+// Cache configures the Redis cache of the video lists (docs/cache.md).
+type Cache struct {
+	// URL is the Redis URL (REDIS_URL, redis:// or rediss://); "" disables
+	// the cache.
+	URL string
+	// TTL is how long a cached page lives (CACHE_TTL).
+	TTL time.Duration
+}
+
+// Enabled reports whether the cache is configured.
+func (c Cache) Enabled() bool { return c.URL != "" }
+
 // Worker is the configuration of the worker service.
 type Worker struct {
 	LogLevel slog.Level
 	Database Database
 	Broker   Broker
 	Storage  Storage
+	// Cache is the list cache the worker invalidates on every status
+	// change; only URL is used.
+	Cache Cache
 	// HealthAddr is where GET /healthz and /readyz are served
 	// (HEALTH_ADDR, host:port).
 	HealthAddr string
@@ -136,6 +152,7 @@ var defaults = map[string]string{
 	"S3_USE_SSL":        "false",
 	"READINESS_TIMEOUT": "2s",
 	"JWT_TTL":           "1h",
+	"CACHE_TTL":         "30s",
 
 	"MAX_UPLOAD_BYTES":     "1073741824", // 1 GiB
 	"OUTBOX_POLL_INTERVAL": "1s",
@@ -182,6 +199,7 @@ func Load(getenv func(string) string) (Config, error) {
 			Interval:  l.duration("OUTBOX_POLL_INTERVAL"),
 			BatchSize: int(l.int64Between("OUTBOX_BATCH_SIZE", 1, 500)),
 		},
+		Cache:            l.cache(),
 		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
 	}
 	if err := errors.Join(l.errs...); err != nil {
@@ -209,6 +227,7 @@ func LoadWorker(getenv func(string) string) (Worker, error) {
 			Region:    l.str("S3_REGION"),
 			UseSSL:    l.boolean("S3_USE_SSL"),
 		},
+		Cache:            l.cache(),
 		HealthAddr:       l.addr("HEALTH_ADDR"),
 		Concurrency:      int(l.int64Between("WORKER_CONCURRENCY", 1, 256)),
 		MaxAttempts:      int(l.int64Between("WORKER_MAX_ATTEMPTS", 0, 100)),
@@ -357,6 +376,15 @@ func (l *loader) url(key string, schemes ...string) string {
 	}
 	l.fail(key, "scheme %q, want one of %s", u.Scheme, strings.Join(schemes, ", "))
 	return v
+}
+
+// cache reads REDIS_URL (optional) and CACHE_TTL.
+func (l *loader) cache() Cache {
+	c := Cache{TTL: l.duration("CACHE_TTL")}
+	if strings.TrimSpace(l.getenv("REDIS_URL")) != "" {
+		c.URL = l.url("REDIS_URL", "redis", "rediss")
+	}
+	return c
 }
 
 // bucketName follows the S3 bucket naming rules (simplified).

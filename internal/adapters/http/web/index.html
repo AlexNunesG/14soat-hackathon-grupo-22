@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>FIAP X Video Processor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232f6fdb'/%3E%3Cpath d='M6 4.5v7l5.5-3.5z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/style.css">
+  <script src="/ui/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <h1 class="brand"><span class="brand-mark" aria-hidden="true"></span>FIAP X Video Processor</h1>
+      <div id="session" class="session" hidden>
+        <span id="session-user" class="muted"></span>
+        <button id="logout-button" type="button" class="button secondary">Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="wrap">
+    <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+    <!-- Signed out: log in or create an account. -->
+    <section id="auth-view" aria-label="Sign in" hidden>
+      <p class="lead">Upload videos and download a zip with one PNG frame per second.</p>
+      <div class="grid two">
+        <form id="login-form" class="card" novalidate>
+          <h2>Log in</h2>
+          <label for="login-email">E-mail</label>
+          <input id="login-email" name="email" type="email" autocomplete="username" required>
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="button">Log in</button>
+        </form>
+
+        <form id="register-form" class="card" novalidate>
+          <h2>Create an account</h2>
+          <label for="register-name">Name</label>
+          <input id="register-name" name="name" type="text" autocomplete="name" required>
+          <label for="register-email">E-mail</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" required>
+          <label for="register-password">Password <span class="muted">(at least 8 characters)</span></label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="button">Create account</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Signed in: upload and follow the videos. -->
+    <section id="app-view" aria-label="Your videos" hidden>
+      <form id="upload-form" class="card" novalidate>
+        <h2>Upload videos</h2>
+        <p class="muted">Supported formats: mp4, avi, mov, mkv, wmv, flv, webm. You can pick several files.</p>
+        <div class="upload-row">
+          <label for="upload-files" class="visually-hidden">Video files</label>
+          <input id="upload-files" name="videos" type="file" multiple
+                 accept=".mp4,.avi,.mov,.mkv,.wmv,.flv,.webm,video/*">
+          <button id="upload-button" type="submit" class="button">Upload</button>
+        </div>
+        <progress id="upload-progress" max="100" value="0" hidden></progress>
+        <p class="form-error" role="alert" hidden></p>
+      </form>
+
+      <div class="card">
+        <div class="table-head">
+          <h2>Your videos</h2>
+          <div class="table-tools">
+            <span id="polling" class="muted" hidden>Updating every 2 s…</span>
+            <button id="refresh-button" type="button" class="button secondary">Refresh</button>
+          </div>
+        </div>
+        <p class="form-error" id="list-error" role="alert" hidden></p>
+        <div class="table-scroll">
+          <table id="videos-table">
+            <caption class="visually-hidden">Your videos, newest first</caption>
+            <thead>
+              <tr>
+                <th scope="col">File</th>
+                <th scope="col">Status</th>
+                <th scope="col" class="num">Frames</th>
+                <th scope="col">Error</th>
+                <th scope="col">Created</th>
+                <th scope="col">Updated</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody id="videos-body"></tbody>
+          </table>
+        </div>
+        <p id="empty" class="muted empty" hidden>No videos yet. Upload one above.</p>
+        <nav class="pager" aria-label="Pagination">
+          <button id="prev-page" type="button" class="button secondary">Previous</button>
+          <span id="page-info" aria-live="polite"></span>
+          <button id="next-page" type="button" class="button secondary">Next</button>
+          <label for="page-size" class="muted">Per page</label>
+          <select id="page-size">
+            <option>10</option>
+            <option selected>20</option>
+            <option>50</option>
+            <option>100</option>
+          </select>
+        </nav>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

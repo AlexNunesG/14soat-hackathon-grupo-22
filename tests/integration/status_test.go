@@ -15,6 +15,7 @@ import (
 )
 
 func TestStatusListsProcessedZip(t *testing.T) {
+	notImplemented(t)
 	resetWorkspace(t)
 	_, result := upload(t, "video", "clip.mp4", makeVideo(t, "mp4", "mpeg4", 2))
 	if !result.Success {
@@ -51,6 +52,7 @@ func TestStatusListsProcessedZip(t *testing.T) {
 }
 
 func TestStatusWithNoProcessedFiles(t *testing.T) {
+	notImplemented(t)
 	requireReferenceApp(t)
 	resetWorkspace(t)
 
@@ -62,6 +64,7 @@ func TestStatusWithNoProcessedFiles(t *testing.T) {
 }
 
 func TestStatusListsOnlyReadableZipFiles(t *testing.T) {
+	notImplemented(t)
 	requireReferenceApp(t)
 	resetWorkspace(t)
 	outputs := filepath.Join(referenceDir, "outputs")

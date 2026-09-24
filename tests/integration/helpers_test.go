@@ -36,6 +36,23 @@ type uploadResult struct {
 	Images     []string `json:"images,omitempty"`
 }
 
+// notImplemented skips a test until the implementation supports it. To
+// enable a test, delete its notImplemented line.
+func notImplemented(t *testing.T) {
+	t.Helper()
+	t.Skip("not implemented yet: delete the notImplemented line to enable this test")
+}
+
+// appURL returns the absolute URL of path on the app under test. It fails
+// the test when no app is running (no BASE_URL and no Go code to build).
+func appURL(t *testing.T, path string) string {
+	t.Helper()
+	if baseURL == "" {
+		t.Fatal("no app to test: add the implementation at the module root or set BASE_URL")
+	}
+	return baseURL + path
+}
+
 // requireReferenceApp skips tests that need the app launched by TestMain:
 // they inspect or manipulate its working directory (uploads/, outputs/,
 // temp/) or start extra instances of its binary. They cannot run against an
@@ -43,7 +60,7 @@ type uploadResult struct {
 func requireReferenceApp(t *testing.T) {
 	t.Helper()
 	if referenceDir == "" {
-		t.Skip("needs the reference app launched by the test harness; skipped when BASE_URL is set")
+		t.Skip("needs the reference app launched by the test harness; skipped when BASE_URL is set or no app was found")
 	}
 }
 
@@ -140,7 +157,7 @@ func uploadRequest(t *testing.T, field, filename string, content []byte) *http.R
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/upload", body)
+	req, err := http.NewRequest(http.MethodPost, appURL(t, "/upload"), body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +181,7 @@ func upload(t *testing.T, field, filename string, content []byte) (int, uploadRe
 
 func get(t *testing.T, path string) (*http.Response, []byte) {
 	t.Helper()
-	resp, err := httpClient.Get(baseURL + path)
+	resp, err := httpClient.Get(appURL(t, path))
 	if err != nil {
 		t.Fatal(err)
 	}

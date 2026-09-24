@@ -11,7 +11,9 @@
 //     separate process on a free port (PORT env var) inside a throwaway
 //     working directory, and stops it with SIGTERM at the end. Tests marked
 //     with requireReferenceApp also inspect and manipulate that working
-//     directory (uploads/, outputs/, temp/) to reach failure paths.
+//     directory (uploads/, outputs/, temp/) to reach failure paths. If the
+//     module root has no Go code yet, nothing is started: skipped tests pass
+//     and any enabled test fails, saying the app is missing.
 //
 //   - BASE_URL=http://host:port: the tests run against an already running
 //     implementation. Nothing is built or started, and tests that depend on
@@ -69,7 +71,19 @@ func run(m *testing.M) int {
 		return m.Run()
 	}
 
-	app, err := startReferenceApp()
+	root, err := goEnv("GOMOD")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	root = filepath.Dir(root)
+
+	if !hasApp(root) {
+		fmt.Fprintf(os.Stderr, "no app found in %s: nothing was started, so every enabled test will fail\n", root)
+		return m.Run()
+	}
+
+	app, err := startReferenceApp(root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -94,7 +108,18 @@ type referenceApp struct {
 	log      *bytes.Buffer
 }
 
-func startReferenceApp() (*referenceApp, error) {
+// hasApp reports whether the module root contains a Go package to build.
+func hasApp(root string) bool {
+	files, _ := filepath.Glob(filepath.Join(root, "*.go"))
+	for _, f := range files {
+		if !strings.HasSuffix(f, "_test.go") {
+			return true
+		}
+	}
+	return false
+}
+
+func startReferenceApp(moduleRoot string) (*referenceApp, error) {
 	tmp, err := os.MkdirTemp("", "video-processor-it-*")
 	if err != nil {
 		return nil, err
@@ -105,11 +130,6 @@ func startReferenceApp() (*referenceApp, error) {
 		return nil, err
 	}
 
-	moduleRoot, err := goEnv("GOMOD")
-	if err != nil {
-		return fail(err)
-	}
-	moduleRoot = filepath.Dir(moduleRoot)
 	app.root = moduleRoot
 
 	bin := filepath.Join(tmp, "app")

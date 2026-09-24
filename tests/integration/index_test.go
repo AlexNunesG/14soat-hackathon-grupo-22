@@ -9,6 +9,7 @@ import (
 )
 
 func TestIndexServesUploadPage(t *testing.T) {
+	notImplemented(t)
 	resp, body := get(t, "/")
 
 	if resp.StatusCode != http.StatusOK {

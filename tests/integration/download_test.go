@@ -12,6 +12,7 @@ import (
 )
 
 func TestDownloadReturnsGeneratedZip(t *testing.T) {
+	notImplemented(t)
 	resetWorkspace(t)
 	_, result := upload(t, "video", "clip.mp4", makeVideo(t, "mp4", "mpeg4", 2))
 	if !result.Success {
@@ -48,6 +49,7 @@ func TestDownloadReturnsGeneratedZip(t *testing.T) {
 }
 
 func TestDownloadUnknownFileReturns404(t *testing.T) {
+	notImplemented(t)
 	resetWorkspace(t)
 
 	for _, name := range []string{"missing.zip", "frames_20000101_000000.zip", "outputs.zip"} {

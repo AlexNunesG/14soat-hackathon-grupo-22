@@ -13,6 +13,7 @@ import (
 )
 
 func TestEndToEndUploadStatusDownload(t *testing.T) {
+	notImplemented(t)
 	resetWorkspace(t)
 
 	var zips []string

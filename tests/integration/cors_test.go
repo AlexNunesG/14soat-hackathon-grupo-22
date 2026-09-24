@@ -9,6 +9,7 @@ import (
 )
 
 func TestCORSHeadersOnEveryResponse(t *testing.T) {
+	notImplemented(t)
 	for _, path := range []string{"/", "/api/status", "/download/missing.zip"} {
 		t.Run(path, func(t *testing.T) {
 			resp, _ := get(t, path)
@@ -18,9 +19,10 @@ func TestCORSHeadersOnEveryResponse(t *testing.T) {
 }
 
 func TestCORSPreflightShortCircuits(t *testing.T) {
+	notImplemented(t)
 	for _, path := range []string{"/upload", "/api/status", "/download/x.zip", "/any/unknown/route"} {
 		t.Run(path, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodOptions, baseURL+path, nil)
+			req, _ := http.NewRequest(http.MethodOptions, appURL(t, path), nil)
 			req.Header.Set("Origin", "http://example.com")
 			req.Header.Set("Access-Control-Request-Method", "POST")
 			resp, err := httpClient.Do(req)

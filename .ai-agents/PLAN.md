@@ -280,16 +280,18 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 - [x] Enables: `health_test.go`.
 
 **2.2 Persistence and authentication (RF3, RT1)**
-- [ ] `db/migrations/` with versioned SQL (golang-migrate or goose):
+- [x] `db/migrations/` with versioned SQL (goose v3, embedded; run by the
+      one-shot `migrate` compose service / `make migrate`, see
+      [`docs/database.md`](../docs/database.md)):
       `users (id, email, name, password_hash, created_at)`,
       `videos (id, user_id, original_name, storage_key, zip_key, status,
       frame_count, error_message, created_at, updated_at)`, indexes on
       `(user_id, created_at)` and `status`. → **D2**
-- [ ] Repository layer (pgx) with integration tests against real Postgres.
-- [ ] Register/login (bcrypt, JWT with expiry; secret from env).
-- [ ] Auth middleware on all `/api/v1/videos*` routes.
-- [ ] Ownership checks on every video route.
-- [ ] Enables: `auth_test.go`.
+- [x] Repository layer (pgx) with integration tests against real Postgres (`POSTGRES_TEST_URL`).
+- [x] Register/login (bcrypt cost 12, HS256 JWT with expiry; `JWT_SECRET` ≥ 32 bytes from env).
+- [x] Auth middleware on all `/api/v1/videos*` routes.
+- [x] Ownership checks on every video route (list/get done; upload/download stubs return 501 until 2.3/2.4).
+- [x] Enables: `auth_test.go`.
 
 **2.3 Messaging and async processing (RF1, RF2, RT2)**
 - [ ] RabbitMQ topology as code: exchange `videos`, queues `video.process`,
@@ -310,7 +312,7 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       `concurrency_test.go`, `resilience_test.go`.
 
 **2.4 Status listing and download (RF4)**
-- [ ] `GET /api/v1/videos` (paginated), `GET /api/v1/videos/{id}`.
+- [x] `GET /api/v1/videos` (paginated), `GET /api/v1/videos/{id}` (done early in 2.2: the auth tests need them).
 - [ ] `GET /api/v1/videos/{id}/download` (stream or presigned URL).
 - [ ] Redis cache for the list (invalidate on status change).
 - [ ] Simple web UI (login, upload, status table with polling, download).

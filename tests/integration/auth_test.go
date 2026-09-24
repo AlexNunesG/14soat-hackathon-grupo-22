@@ -22,7 +22,6 @@ import (
 )
 
 func TestRegisterCreatesUser(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	mixedCase := "Ada.User-" + strings.ToUpper(randomHex(t, 8)) + "@Example.COM"
 
@@ -60,7 +59,6 @@ func TestRegisterCreatesUser(t *testing.T) {
 }
 
 func TestRegisterDuplicateEmailIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	email := uniqueEmail(t)
 	if resp, body := register(t, "First", email, "password-1"); resp.StatusCode != http.StatusCreated {
@@ -79,7 +77,6 @@ func TestRegisterDuplicateEmailIsRejected(t *testing.T) {
 }
 
 func TestRegisterInvalidInputIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	valid := func() map[string]any {
 		return map[string]any{"name": "Ada", "email": uniqueEmail(t), "password": "long-enough"}
@@ -114,7 +111,6 @@ func TestRegisterInvalidInputIsRejected(t *testing.T) {
 }
 
 func TestLoginReturnsBearerToken(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	email := uniqueEmail(t)
 	if resp, body := register(t, "Ada", email, "correct-horse-battery"); resp.StatusCode != http.StatusCreated {
@@ -150,7 +146,6 @@ func TestLoginReturnsBearerToken(t *testing.T) {
 }
 
 func TestLoginWithInvalidCredentialsIsRejected(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	user, _ := registerAndLogin(t)
 
@@ -187,7 +182,6 @@ func forgedToken(t *testing.T, subject string) string {
 }
 
 func TestProtectedRoutesRequireValidToken(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	user, token := registerAndLogin(t)
 	someID := randomUUID(t)

@@ -1,6 +1,6 @@
-// Package postgres holds the PostgreSQL adapters (pgx). For now it only
-// opens the connection pool, whose Ping backs the api's /readyz; the
-// repositories arrive with persistence (PLAN.md Phase 2.2).
+// Package postgres holds the PostgreSQL adapters (pgx): the connection pool
+// (whose Ping backs the api's /readyz), the schema migrations (goose, see
+// docs/database.md) and the user and video repositories.
 package postgres
 
 import (

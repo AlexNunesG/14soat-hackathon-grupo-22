@@ -25,6 +25,7 @@ type Config struct {
 	Database Database
 	Broker   Broker
 	Storage  Storage
+	Auth     Auth
 	// ReadinessTimeout bounds each dependency check of GET /readyz.
 	ReadinessTimeout time.Duration
 }
@@ -57,8 +58,22 @@ type Storage struct {
 	UseSSL    bool
 }
 
+// Auth configures the access tokens.
+type Auth struct {
+	// JWTSecret is the HS256 signing key (JWT_SECRET, at least
+	// MinJWTSecretLength bytes). Every api replica must share it.
+	JWTSecret []byte
+	// TokenTTL is the lifetime of an access token (JWT_TTL).
+	TokenTTL time.Duration
+}
+
+// MinJWTSecretLength is the minimum length of JWT_SECRET in bytes (the
+// HS256 key must be at least as long as the hash output, RFC 7518 §3.2).
+const MinJWTSecretLength = 32
+
 // defaults apply to unset variables. Variables that carry credentials
-// (DATABASE_URL, AMQP_URL, S3_ACCESS_KEY, S3_SECRET_KEY) have no default and
+// (DATABASE_URL, AMQP_URL, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET) have no
+// default and
 // are required: the compose stack sets them, and .env.example has
 // development values for running a service from the host.
 var defaults = map[string]string{
@@ -70,6 +85,7 @@ var defaults = map[string]string{
 	"S3_REGION":         "us-east-1",
 	"S3_USE_SSL":        "false",
 	"READINESS_TIMEOUT": "2s",
+	"JWT_TTL":           "1h",
 }
 
 // FromEnv loads the configuration from the process environment.
@@ -95,10 +111,38 @@ func Load(getenv func(string) string) (Config, error) {
 			Region:    l.str("S3_REGION"),
 			UseSSL:    l.boolean("S3_USE_SSL"),
 		},
+		Auth: Auth{
+			JWTSecret: l.secret("JWT_SECRET", MinJWTSecretLength),
+			TokenTTL:  l.durationAtLeast("JWT_TTL", time.Second),
+		},
 		ReadinessTimeout: l.duration("READINESS_TIMEOUT"),
 	}
 	if err := errors.Join(l.errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+// Migrate is the configuration of `api migrate`, which only needs the
+// database.
+type Migrate struct {
+	LogLevel slog.Level
+	Database Database
+}
+
+// MigrateFromEnv loads the migrate configuration from the process
+// environment.
+func MigrateFromEnv() (Migrate, error) { return LoadMigrate(os.Getenv) }
+
+// LoadMigrate is Load for `api migrate`: LOG_LEVEL and DATABASE_URL only.
+func LoadMigrate(getenv func(string) string) (Migrate, error) {
+	l := loader{getenv: getenv}
+	cfg := Migrate{
+		LogLevel: l.logLevel("LOG_LEVEL"),
+		Database: Database{URL: l.url("DATABASE_URL", "postgres", "postgresql")},
+	}
+	if err := errors.Join(l.errs...); err != nil {
+		return Migrate{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
 }
@@ -144,6 +188,29 @@ func (l *loader) duration(key string) time.Duration {
 		l.fail(key, "%q is not a positive duration (e.g. 15s)", v)
 	}
 	return d
+}
+
+func (l *loader) durationAtLeast(key string, minimum time.Duration) time.Duration {
+	v := l.str(key)
+	d, err := time.ParseDuration(v)
+	if err != nil || d < minimum {
+		l.fail(key, "%q is not a duration of at least %s (e.g. 1h)", v, minimum)
+	}
+	return d
+}
+
+// secret reads a required secret of at least minLen bytes. Its value is
+// never echoed in errors. Surrounding whitespace is not trimmed: it is part
+// of the key.
+func (l *loader) secret(key string, minLen int) []byte {
+	v := l.getenv(key)
+	switch {
+	case v == "":
+		l.fail(key, "is required")
+	case len(v) < minLen:
+		l.fail(key, "must have at least %d bytes, got %d", minLen, len(v))
+	}
+	return []byte(v)
 }
 
 func (l *loader) boolean(key string) bool {

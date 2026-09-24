@@ -110,6 +110,25 @@ services:
       start_period: 30s
       start_interval: 1s
 
+  # One-shot job: applies the database migrations (db/migrations, embedded
+  # in the api binary) and exits. The api starts only after it succeeds.
+  # Re-run it with `make migrate`.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/docker/api.Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-}
+    image: video-processor/api:dev
+    command: ["migrate"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:-video}@postgres:5432/${POSTGRES_DB:-video_processor}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ..
@@ -130,9 +149,15 @@ services:
       S3_BUCKET: ${S3_BUCKET:-videos}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_USE_SSL: "false"
+      # Development-only signing key; set a real random JWT_SECRET (>= 32
+      # bytes) anywhere else. Every api replica must share it.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
+      JWT_TTL: ${JWT_TTL:-1h}
     ports:
       - "8080:8080"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

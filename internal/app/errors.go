@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
+
+	"video-processor/internal/domain"
 )
 
 // Errors of the use cases and repositories. Adapters map them to their
@@ -26,7 +28,24 @@ var (
 
 	// ErrInvalidInput is wrapped by *ValidationError.
 	ErrInvalidInput = errors.New("invalid input")
+	// ErrMissingFile is returned by an upload without any file.
+	ErrMissingFile = errors.New("no file to upload")
+	// ErrVideoNotReady is wrapped by *NotReadyError.
+	ErrVideoNotReady = errors.New("video is not ready for download")
 )
+
+// NotReadyError reports a download of a video that is not DONE. It wraps
+// ErrVideoNotReady.
+type NotReadyError struct {
+	Status domain.VideoStatus
+}
+
+func (e *NotReadyError) Error() string {
+	return fmt.Sprintf("video is not ready for download (status: %s)", e.Status)
+}
+
+// Unwrap makes errors.Is(err, ErrVideoNotReady) true.
+func (e *NotReadyError) Unwrap() error { return ErrVideoNotReady }
 
 // ValidationError reports an invalid field of a use case input. It wraps
 // ErrInvalidInput.

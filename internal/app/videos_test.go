@@ -93,7 +93,7 @@ func TestPageOffset(t *testing.T) {
 
 func TestListVideos(t *testing.T) {
 	repo := &fakeVideos{items: []domain.Video{{ID: videoID, OwnerID: ownerID}}, total: 7}
-	page, err := app.NewVideos(repo).List(context.Background(), ownerID, app.Page{Number: 2, Size: 5})
+	page, err := app.NewVideos(repo, newFakeStorage()).List(context.Background(), ownerID, app.Page{Number: 2, Size: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestListVideos(t *testing.T) {
 }
 
 func TestListVideosEmptyIsNotNil(t *testing.T) {
-	page, err := app.NewVideos(&fakeVideos{}).List(context.Background(), ownerID, app.Page{Number: 1, Size: 20})
+	page, err := app.NewVideos(&fakeVideos{}, newFakeStorage()).List(context.Background(), ownerID, app.Page{Number: 1, Size: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestListVideosEmptyIsNotNil(t *testing.T) {
 
 func TestListVideosRejectsInvalidPage(t *testing.T) {
 	repo := &fakeVideos{}
-	_, err := app.NewVideos(repo).List(context.Background(), ownerID, app.Page{Number: 1, Size: 101})
+	_, err := app.NewVideos(repo, newFakeStorage()).List(context.Background(), ownerID, app.Page{Number: 1, Size: 101})
 	if !errors.Is(err, app.ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput", err)
 	}
@@ -128,14 +128,14 @@ func TestListVideosRejectsInvalidPage(t *testing.T) {
 
 func TestListVideosRepositoryError(t *testing.T) {
 	repo := &fakeVideos{err: errors.New("timeout")}
-	if _, err := app.NewVideos(repo).List(context.Background(), ownerID, app.Page{Number: 1, Size: 20}); err == nil {
+	if _, err := app.NewVideos(repo, newFakeStorage()).List(context.Background(), ownerID, app.Page{Number: 1, Size: 20}); err == nil {
 		t.Fatal("want error")
 	}
 }
 
 func TestGetVideo(t *testing.T) {
 	repo := &fakeVideos{items: []domain.Video{{ID: videoID, OwnerID: ownerID, OriginalName: "a.mp4"}}}
-	v, err := app.NewVideos(repo).Get(context.Background(), ownerID, videoID)
+	v, err := app.NewVideos(repo, newFakeStorage()).Get(context.Background(), ownerID, videoID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestGetVideo(t *testing.T) {
 
 func TestGetVideoNotFound(t *testing.T) {
 	repo := &fakeVideos{items: []domain.Video{{ID: videoID, OwnerID: ownerID}}}
-	videos := app.NewVideos(repo)
+	videos := app.NewVideos(repo, newFakeStorage())
 	other := "33333333-3333-4333-8333-333333333333"
 	for name, tc := range map[string]struct{ owner, id string }{
 		"unknown id":           {ownerID, other},
@@ -165,5 +165,51 @@ func TestGetVideoNotFound(t *testing.T) {
 	}
 	if repo.getCalls != calls {
 		t.Error("the repository was queried for a malformed id")
+	}
+}
+
+func TestDownload(t *testing.T) {
+	repo := &fakeVideos{items: []domain.Video{{
+		ID: videoID, OwnerID: ownerID, OriginalName: "a.mp4", Status: domain.StatusDone, ZipKey: "frames/z.zip", FrameCount: 2,
+	}}}
+	store := newFakeStorage()
+	store.objects["frames/z.zip"] = []byte("zip!")
+	v, obj, err := app.NewVideos(repo, store).Download(context.Background(), ownerID, videoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obj.Close()
+	if v.ID != videoID || obj.Size != 4 {
+		t.Errorf("video %+v, size %d", v, obj.Size)
+	}
+}
+
+func TestDownloadNotReady(t *testing.T) {
+	for _, status := range []domain.VideoStatus{domain.StatusPending, domain.StatusProcessing, domain.StatusFailed} {
+		repo := &fakeVideos{items: []domain.Video{{ID: videoID, OwnerID: ownerID, Status: status}}}
+		_, _, err := app.NewVideos(repo, newFakeStorage()).Download(context.Background(), ownerID, videoID)
+		var notReady *app.NotReadyError
+		if !errors.As(err, &notReady) || !errors.Is(err, app.ErrVideoNotReady) || notReady.Status != status {
+			t.Fatalf("%s: err = %v, want a NotReadyError", status, err)
+		}
+		if want := "video is not ready for download (status: " + string(status) + ")"; err.Error() != want {
+			t.Errorf("message %q, want %q", err, want)
+		}
+	}
+}
+
+func TestDownloadNotFoundAndMissingArchive(t *testing.T) {
+	repo := &fakeVideos{items: []domain.Video{{ID: videoID, OwnerID: ownerID, Status: domain.StatusDone, ZipKey: "gone.zip"}}}
+	videos := app.NewVideos(repo, newFakeStorage())
+	other := "33333333-3333-4333-8333-333333333333"
+	if _, _, err := videos.Download(context.Background(), other, videoID); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("another user's video: err = %v, want ErrNotFound", err)
+	}
+	if _, _, err := videos.Download(context.Background(), ownerID, "nope"); !errors.Is(err, app.ErrNotFound) {
+		t.Errorf("malformed id: err = %v, want ErrNotFound", err)
+	}
+	// A DONE video whose archive is gone is a server error, not a 404.
+	if _, _, err := videos.Download(context.Background(), ownerID, videoID); err == nil || errors.Is(err, app.ErrNotFound) {
+		t.Errorf("missing archive: err = %v, want a non-NotFound error", err)
 	}
 }

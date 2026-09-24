@@ -34,7 +34,7 @@ deliverable **D2**.
 Add `db/migrations/0000N_what_it_does.sql` with the next number, never edit
 a migration that was merged, and make the `Down` section undo the `Up`.
 
-## Schema (version 1)
+## Schema (version 2)
 
 ```sql
 CREATE TABLE users (
@@ -62,8 +62,29 @@ CREATE INDEX videos_user_created_idx ON videos (user_id, created_at DESC, id DES
 CREATE INDEX videos_status_idx ON videos (status);
 ```
 
+Version 2 adds the transactional outbox
+([ADR 0004](adr/0004-transactional-outbox.md)): the api inserts a video and
+the message that queues its processing in the same transaction, and a relay
+publishes the messages to RabbitMQ and deletes each row once the broker
+confirms it.
+
+```sql
+CREATE TABLE outbox (
+    id           bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- publish order
+    message_id   text        NOT NULL,             -- AMQP message-id (the video id)
+    topic        text        NOT NULL,             -- routing key, e.g. video.uploaded
+    payload      jsonb       NOT NULL,             -- message body
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    attempts     integer     NOT NULL DEFAULT 0,   -- failed publishes so far
+    last_error   text,                             -- why the last publish failed
+    available_at timestamptz NOT NULL DEFAULT now() -- next attempt (backoff)
+);
+CREATE INDEX outbox_available_idx ON outbox (available_at, id);
+```
+
 The exact DDL, with all constraints, is in
-[`00001_create_users_and_videos.sql`](../db/migrations/00001_create_users_and_videos.sql).
+[`00001_create_users_and_videos.sql`](../db/migrations/00001_create_users_and_videos.sql)
+and [`00002_create_outbox.sql`](../db/migrations/00002_create_outbox.sql).
 Notes:
 
 - **E-mails** are unique case-insensitively because the api stores them
@@ -80,13 +101,24 @@ Notes:
 - **Timestamps** are `timestamptz` with microsecond precision; the api
   truncates its clock to microseconds before inserting, so what it returns is
   what a later read returns.
+- **Status changes** by the worker are conditional
+  (`UPDATE videos ... WHERE id = $1 AND status IN (...)`): `PENDING` or
+  `PROCESSING` → `PROCESSING` (a redelivered job restarts), `PROCESSING` →
+  `DONE`, `PENDING` or `PROCESSING` → `FAILED`. A final video never changes,
+  whatever the order or number of deliveries of its job.
+- **Outbox relay**: `SELECT ... WHERE available_at <= now() ORDER BY id
+  LIMIT n FOR UPDATE SKIP LOCKED`, publish with confirms, then `DELETE` the
+  confirmed rows and push the others' `available_at` back (1 s, 2 s, 4 s …
+  up to 15 s), all in one transaction. Pending jobs:
+  `SELECT count(*), max(attempts), min(created_at) FROM outbox;`
 
 ## Repository tests
 
 The repositories (`internal/adapters/postgres`) have integration tests
 against a real database. They are skipped unless `POSTGRES_TEST_URL` is set,
 apply the migrations themselves and only add rows with fresh ids, so any
-database works:
+database works. The outbox tests create (and drop) a throwaway database next
+to it, so a running api's relay does not claim their rows:
 
 ```sh
 make up

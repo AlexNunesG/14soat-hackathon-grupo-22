@@ -164,3 +164,22 @@ func TestUnknownRouteUsesErrorEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthRouter(t *testing.T) {
+	h := httpapi.NewHealthRouter(nil, []httpapi.Check{
+		{Name: "database", Pinger: ok()},
+		{Name: "broker", Pinger: failing()},
+	}, time.Second)
+	if rec := get(t, h, "/healthz"); rec.Code != http.StatusOK {
+		t.Errorf("/healthz: status %d", rec.Code)
+	}
+	rec := get(t, h, "/readyz")
+	body := decode[readiness](t, rec)
+	if rec.Code != http.StatusServiceUnavailable || body.Checks["database"] != "ok" || body.Checks["broker"] != "error" {
+		t.Errorf("/readyz: status %d body %+v", rec.Code, body)
+	}
+	// Only the probes: no API routes.
+	if rec := get(t, h, "/api/v1/videos"); rec.Code != http.StatusNotFound {
+		t.Errorf("/api/v1/videos: status %d, want 404", rec.Code)
+	}
+}

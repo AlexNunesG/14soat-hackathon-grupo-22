@@ -10,6 +10,7 @@ one's status.
 | [0001](./0001-replace-legacy-test-contract.md) | Replace the legacy test contract | Accepted |
 | [0002](./0002-repository-layout.md) | Repository layout: single-module monorepo | Accepted |
 | [0003](./0003-object-storage-seaweedfs.md) | Object storage: S3 API, SeaweedFS locally | Accepted |
+| [0004](./0004-transactional-outbox.md) | Transactional outbox for processing jobs | Accepted |
 
 ## Template
 

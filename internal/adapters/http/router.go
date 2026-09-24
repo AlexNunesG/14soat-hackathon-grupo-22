@@ -33,6 +33,14 @@ type Options struct {
 	Tokens app.TokenVerifier
 	// Videos serves the caller's videos.
 	Videos VideoService
+	// Uploads creates videos from uploads.
+	Uploads UploadService
+	// MaxUploadBytes limits the size of an upload request; 0 means
+	// DefaultMaxUploadBytes.
+	MaxUploadBytes int64
+	// UploadTempDir is where uploads are spooled while they are received;
+	// "" means os.TempDir().
+	UploadTempDir string
 }
 
 func init() {
@@ -52,16 +60,12 @@ func NewRouter(opts Options) http.Handler {
 		timeout = DefaultCheckTimeout
 	}
 
-	r := gin.New()
-	r.ContextWithFallback = true // c.Done()/c.Err() follow the request context
-	r.Use(requestLogger(log), recoverer(log))
-	r.NoRoute(func(c *gin.Context) {
-		WriteError(c, http.StatusNotFound, CodeNotFound, "route not found")
-	})
+	maxUpload := opts.MaxUploadBytes
+	if maxUpload <= 0 {
+		maxUpload = DefaultMaxUploadBytes
+	}
 
-	r.GET("/healthz", healthz)
-	r.GET("/readyz", readyz(log, opts.Checks, timeout))
-
+	r := newEngine(log, opts.Checks, timeout)
 	v1 := r.Group("/api/v1")
 	v1.POST("/auth/register", register(log, opts.Auth))
 	v1.POST("/auth/login", login(log, opts.Auth))
@@ -69,9 +73,35 @@ func NewRouter(opts Options) http.Handler {
 	// Every video route requires a bearer token (docs/openapi.yaml).
 	videos := v1.Group("/videos", requireAuth(log, opts.Tokens))
 	videos.GET("", listVideos(log, opts.Videos))
-	videos.POST("", notImplemented)
+	videos.POST("", uploadVideos(log, opts.Uploads, maxUpload, opts.UploadTempDir))
 	videos.GET("/:id", getVideo(log, opts.Videos))
-	videos.GET("/:id/download", notImplemented)
+	videos.GET("/:id/download", downloadVideo(log, opts.Videos))
+	return r
+}
+
+// NewHealthRouter returns a handler with only the probes GET /healthz and
+// GET /readyz, for services without an API (the worker).
+func NewHealthRouter(log *slog.Logger, checks []Check, checkTimeout time.Duration) http.Handler {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	if checkTimeout <= 0 {
+		checkTimeout = DefaultCheckTimeout
+	}
+	return newEngine(log, checks, checkTimeout)
+}
+
+// newEngine returns an engine with the middleware, the 404 envelope and the
+// probes.
+func newEngine(log *slog.Logger, checks []Check, checkTimeout time.Duration) *gin.Engine {
+	r := gin.New()
+	r.ContextWithFallback = true // c.Done()/c.Err() follow the request context
+	r.Use(requestLogger(log), recoverer(log))
+	r.NoRoute(func(c *gin.Context) {
+		WriteError(c, http.StatusNotFound, CodeNotFound, "route not found")
+	})
+	r.GET("/healthz", healthz)
+	r.GET("/readyz", readyz(log, checks, checkTimeout))
 	return r
 }
 

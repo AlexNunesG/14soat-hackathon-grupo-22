@@ -1,0 +1,98 @@
+{
+  "exchanges": [
+    {
+      "name": "videos",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "videos.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "video.process",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "videos.dlx",
+        "x-dead-letter-routing-key": "video.process",
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.process.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.process.retry.1",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.process",
+        "x-message-ttl": 2000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.process.retry.2",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.process",
+        "x-message-ttl": 10000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.process.retry.3",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.process",
+        "x-message-ttl": 30000,
+        "x-queue-type": "classic"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "videos",
+      "vhost": "/",
+      "destination": "video.process",
+      "destination_type": "queue",
+      "routing_key": "video.uploaded",
+      "arguments": {}
+    },
+    {
+      "source": "videos.dlx",
+      "vhost": "/",
+      "destination": "video.process.dlq",
+      "destination_type": "queue",
+      "routing_key": "video.process",
+      "arguments": {}
+    }
+  ]
+}

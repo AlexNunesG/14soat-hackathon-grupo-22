@@ -50,7 +50,6 @@ func burstTimeout(t *testing.T) time.Duration {
 // no 5xx, no timeout or dropped connection), and every accepted video must
 // be processed to DONE and listed exactly once to its owner.
 func TestBurstOfUploadsIsNotLost(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	m := burstSize(t)
 	tokens := make([]string, min(4, m))
@@ -138,7 +137,6 @@ func assertListedOnce(t *testing.T, token string, ids []string) {
 // parallel with other tests, so the restart does not slow down their
 // videos.
 func TestWorkerRestartLosesNoVideo(t *testing.T) {
-	notImplemented(t)
 	if startedStack == nil {
 		if baseURL == "" {
 			t.Fatal(errNoApp)

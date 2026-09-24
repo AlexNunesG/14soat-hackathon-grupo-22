@@ -117,6 +117,16 @@ func run() error {
 		return err
 	}
 
+	// Uploads are recorded with their jobs in the outbox (ADR 0004); the
+	// relay publishes them to RabbitMQ, woken up by every upload.
+	publisher, err := rabbitmq.NewPublisher(cfg.Broker.URL, "api-outbox-relay", rabbitmq.ExchangeVideos, log, rabbitmq.VideoProcess)
+	if err != nil {
+		return err
+	}
+	defer publisher.Close()
+	relay := app.NewOutboxRelay(postgres.NewOutbox(db), publisher, log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
+	videos := postgres.NewVideos(db)
+
 	handler := httpapi.NewRouter(httpapi.Options{
 		Logger: log,
 		Checks: []httpapi.Check{
@@ -127,8 +137,25 @@ func run() error {
 		CheckTimeout: cfg.ReadinessTimeout,
 		Auth:         app.NewAuth(postgres.NewUsers(db), hasher, tokens),
 		Tokens:       tokens,
-		Videos:       app.NewVideos(postgres.NewVideos(db)),
+		Videos:       app.NewVideos(videos, store),
+		Uploads: app.NewUploads(videos, store,
+			app.WithUploadLogger(log), app.OnEnqueued(relay.Notify)),
+		MaxUploadBytes: cfg.Upload.MaxBytes,
+		UploadTempDir:  cfg.Upload.TempDir,
 	})
+
+	// The relay outlives the HTTP server, so the jobs of the last uploads
+	// are published before the process exits.
+	relayCtx, stopRelay := context.WithCancel(context.WithoutCancel(ctx))
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		relay.Run(relayCtx)
+	}()
+	defer func() {
+		stopRelay()
+		<-relayDone
+	}()
 
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTP.Addr)

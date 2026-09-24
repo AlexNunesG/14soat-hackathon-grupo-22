@@ -50,6 +50,8 @@ func TestLoadDefaults(t *testing.T) {
 			Bucket: "videos", Region: "us-east-1",
 		},
 		Auth:             config.Auth{JWTSecret: []byte(testJWTSecret), TokenTTL: time.Hour},
+		Upload:           config.Upload{MaxBytes: 1 << 30},
+		Outbox:           config.Outbox{Interval: time.Second, BatchSize: 100},
 		ReadinessTimeout: 2 * time.Second,
 	}
 	if !reflect.DeepEqual(cfg, want) {
@@ -73,6 +75,11 @@ func TestLoadOverrides(t *testing.T) {
 		"READINESS_TIMEOUT": "500ms",
 		"JWT_SECRET":        " another-secret-of-32-bytes-or-more ",
 		"JWT_TTL":           "15m",
+
+		"MAX_UPLOAD_BYTES":     "1048576",
+		"UPLOAD_TEMP_DIR":      "/data/tmp",
+		"OUTBOX_POLL_INTERVAL": "250ms",
+		"OUTBOX_BATCH_SIZE":    "500",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +89,9 @@ func TestLoadOverrides(t *testing.T) {
 		cfg.Broker.URL != "amqps://mq:5671/vh" || cfg.Storage.Endpoint != "https://s3.example.com" ||
 		cfg.Storage.AccessKey != "ak" || cfg.Storage.SecretKey != "sk" || cfg.Storage.Bucket != "my.bucket-1" ||
 		cfg.Storage.Region != "sa-east-1" || !cfg.Storage.UseSSL || cfg.ReadinessTimeout != 500*time.Millisecond ||
-		string(cfg.Auth.JWTSecret) != " another-secret-of-32-bytes-or-more " || cfg.Auth.TokenTTL != 15*time.Minute {
+		string(cfg.Auth.JWTSecret) != " another-secret-of-32-bytes-or-more " || cfg.Auth.TokenTTL != 15*time.Minute ||
+		cfg.Upload != (config.Upload{MaxBytes: 1 << 20, TempDir: "/data/tmp"}) ||
+		cfg.Outbox != (config.Outbox{Interval: 250 * time.Millisecond, BatchSize: 500}) {
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 }
@@ -117,6 +126,11 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{"JWT_SECRET", "too-short"},
 		{"JWT_TTL", "1h30"},
 		{"JWT_TTL", "500ms"},
+		{"MAX_UPLOAD_BYTES", "0"},
+		{"MAX_UPLOAD_BYTES", "1GiB"},
+		{"OUTBOX_POLL_INTERVAL", "1"},
+		{"OUTBOX_BATCH_SIZE", "0"},
+		{"OUTBOX_BATCH_SIZE", "501"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
@@ -183,5 +197,58 @@ func TestLoadMigrate(t *testing.T) {
 	if _, err := config.LoadMigrate(func(string) string { return "" }); err == nil ||
 		!strings.Contains(err.Error(), "DATABASE_URL: is required") {
 		t.Errorf("err = %v, want DATABASE_URL required", err)
+	}
+}
+
+func TestLoadWorker(t *testing.T) {
+	cfg, err := config.LoadWorker(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := config.Worker{
+		LogLevel: slog.LevelInfo,
+		Database: config.Database{URL: testDatabaseURL},
+		Broker:   config.Broker{URL: testAMQPURL},
+		Storage: config.Storage{
+			Endpoint: "localhost:8333", AccessKey: testAccessKey, SecretKey: testSecretKey,
+			Bucket: "videos", Region: "us-east-1",
+		},
+		HealthAddr:       ":8081",
+		Concurrency:      2,
+		FFmpegTimeout:    10 * time.Minute,
+		ShutdownTimeout:  15 * time.Second,
+		ReadinessTimeout: 2 * time.Second,
+	}
+	if !reflect.DeepEqual(cfg, want) {
+		t.Errorf("defaults:\n got %+v\nwant %+v", cfg, want)
+	}
+
+	cfg, err = config.LoadWorker(env(map[string]string{
+		"HEALTH_ADDR":         "127.0.0.1:9000",
+		"WORKER_CONCURRENCY":  "8",
+		"WORKER_MAX_ATTEMPTS": "2",
+		"FFMPEG_TIMEOUT":      "90s",
+		"WORKER_TEMP_DIR":     "/scratch",
+		"SHUTDOWN_TIMEOUT":    "1m",
+		"JWT_SECRET":          "", // the worker does not need it
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HealthAddr != "127.0.0.1:9000" || cfg.Concurrency != 8 || cfg.MaxAttempts != 2 ||
+		cfg.FFmpegTimeout != 90*time.Second || cfg.TempDir != "/scratch" || cfg.ShutdownTimeout != time.Minute {
+		t.Errorf("overrides not applied: %+v", cfg)
+	}
+
+	for key, value := range map[string]string{
+		"WORKER_CONCURRENCY":  "0",
+		"WORKER_MAX_ATTEMPTS": "-1",
+		"FFMPEG_TIMEOUT":      "soon",
+		"HEALTH_ADDR":         "8081",
+		"AMQP_URL":            "",
+	} {
+		if _, err := config.LoadWorker(env(map[string]string{key: value})); err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s=%q: err = %v", key, value, err)
+		}
 	}
 }

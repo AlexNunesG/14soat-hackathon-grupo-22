@@ -56,6 +56,7 @@ func (fakeTokens) Verify(token string) (string, error) {
 type fakeVideoService struct {
 	page     app.VideoPage
 	video    *domain.Video
+	object   *app.Object
 	err      error
 	gotOwner string
 	gotPage  app.Page
@@ -83,6 +84,15 @@ func (f *fakeVideoService) Get(_ context.Context, ownerID, id string) (*domain.V
 	return f.video, f.err
 }
 
+func (f *fakeVideoService) Download(_ context.Context, ownerID, id string) (*domain.Video, *app.Object, error) {
+	f.calls++
+	f.gotOwner, f.gotID = ownerID, id
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.video, f.object, nil
+}
+
 func newAPI(auth *fakeAuth, videos *fakeVideoService) http.Handler {
 	if auth == nil {
 		auth = &fakeAuth{}
@@ -90,7 +100,7 @@ func newAPI(auth *fakeAuth, videos *fakeVideoService) http.Handler {
 	if videos == nil {
 		videos = &fakeVideoService{}
 	}
-	return httpapi.NewRouter(httpapi.Options{Auth: auth, Tokens: fakeTokens{}, Videos: videos})
+	return httpapi.NewRouter(httpapi.Options{Auth: auth, Tokens: fakeTokens{}, Videos: videos, Uploads: &fakeUploads{}})
 }
 
 func serve(h http.Handler, method, path, token, body string) *httptest.ResponseRecorder {
@@ -372,14 +382,4 @@ func TestGetVideoErrors(t *testing.T) {
 	internal := serve(newAPI(nil, &fakeVideoService{err: errors.New("db down")}),
 		http.MethodGet, "/api/v1/videos/"+videoID, aliceToken, "")
 	assertError(t, internal, http.StatusInternalServerError, httpapi.CodeInternal)
-}
-
-func TestUploadAndDownloadNotImplementedYet(t *testing.T) {
-	for _, r := range []struct{ method, path string }{
-		{http.MethodPost, "/api/v1/videos"},
-		{http.MethodGet, "/api/v1/videos/" + videoID + "/download"},
-	} {
-		rec := serve(newAPI(nil, nil), r.method, r.path, aliceToken, "")
-		assertError(t, rec, http.StatusNotImplemented, httpapi.CodeInternal)
-	}
 }

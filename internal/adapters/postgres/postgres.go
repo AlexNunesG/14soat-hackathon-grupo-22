@@ -17,6 +17,13 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// DB is a Querier that can also open transactions: satisfied by
+// *pgxpool.Pool, *pgx.Conn and pgx.Tx (a nested Begin is a savepoint).
+type DB interface {
+	Querier
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 // SQLSTATE codes the repositories handle
 // (https://www.postgresql.org/docs/current/errcodes-appendix.html).
 const (

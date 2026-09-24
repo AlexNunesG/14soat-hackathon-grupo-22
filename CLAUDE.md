@@ -7,7 +7,7 @@ Guidance for AI agents and contributors working in this repo.
 FIAP X Video Processor (SOAT Phase 5 hackathon): users upload videos and later
 download a `.zip` of their frames. The legacy single-process demo is being
 rebuilt as Go microservices — **api**, **worker**, **notifier** — on
-PostgreSQL, Redis, RabbitMQ, MinIO, MailHog and Prometheus/Grafana.
+PostgreSQL, Redis, RabbitMQ, S3 storage (SeaweedFS locally, ADR 0003), MailHog and Prometheus/Grafana.
 
 - Plan and living checklist: [`.ai-agents/PLAN.md`](.ai-agents/PLAN.md).
   Tick items (`- [x]`) in the same PR that delivers them and keep the

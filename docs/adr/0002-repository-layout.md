@@ -31,7 +31,7 @@ internal/
     http/         Gin handlers, middleware (auth, logging, metrics)
     postgres/     repositories (pgx)
     rabbitmq/     publisher / consumer, topology
-    storage/      MinIO / S3
+    storage/      S3 (SeaweedFS locally, ADR 0003)
     ffmpeg/       frame extractor
     zip/          archiver
     mailer/       SMTP
@@ -39,7 +39,7 @@ internal/
     config/       env configuration
     logging/      slog setup, correlation ids
 db/migrations/    versioned SQL (D2)
-deploy/           compose files, k8s manifests, RabbitMQ definitions, MinIO bootstrap
+deploy/           compose files, k8s manifests, RabbitMQ definitions, storage bootstrap
 docs/             architecture, ADRs, openapi.yaml
 tests/integration/  black-box suite (the spec, ADR 0001)
 ```

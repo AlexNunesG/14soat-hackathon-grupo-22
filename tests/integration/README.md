@@ -38,10 +38,11 @@ These rules apply to every phase and every PR, human or AI agent.
 5. **Never skip, disable or weaken a test to get green CI.** Re-adding
    `notImplemented(t)` to an enabled test counts as disabling it.
 
-## Status: every test is skipped
+## Status: enabled as the services are built
 
-The services don't exist yet. Every test starts with `notImplemented(t)`,
-which skips it, so the suite stays green while there is nothing to test.
+Tests whose behavior is not implemented yet start with `notImplemented(t)`,
+which skips them. Enabled so far: `health_test.go` (Phase 2.1). Every other
+test is still skipped.
 
 To enable a test, delete its `notImplemented(t)` line in the same pull request
 that implements the behavior it checks (Ground rule 4). An enabled test fails
@@ -142,5 +143,5 @@ These come from the tests and `docs/openapi.yaml`:
 
 `make check` runs what CI (`.github/workflows/ci.yml`) runs: `gofmt`,
 `go vet`, `golangci-lint` and `go test -race ./...`, which includes this suite
-in the default mode. Until `deploy/docker-compose.yml` exists (Phase 2.1)
-nothing is started and every test is skipped.
+in the default mode: it starts `deploy/docker-compose.yml`, runs the enabled
+tests against it and removes the stack.

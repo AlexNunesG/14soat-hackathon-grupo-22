@@ -1,0 +1,166 @@
+# Local stack of the video processor (PLAN.md Phase 2.1).
+#
+#   make up      # docker compose -f deploy/docker-compose.yml up -d --wait
+#   make down    # ... down -v
+#
+# The integration suite (tests/integration) starts this file with
+# `up -d --build --wait` and expects the API on localhost:8080 and the
+# MailHog HTTP API on localhost:8025.
+#
+# Every setting has a development default (${VAR:-default}), so no .env
+# file is needed; .env.example documents the variables. Infrastructure ports
+# are published on 127.0.0.1 only, for running a service or a test from the
+# host.
+
+name: video-processor
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-video}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-video}
+      POSTGRES_DB: ${POSTGRES_DB:-video_processor}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-video}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-video}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+      start_interval: 2s
+
+  # S3-compatible object store: SeaweedFS in all-in-one ("mini") mode with
+  # the S3 gateway on 8333. Services only speak plain S3 (S3_* variables),
+  # so MinIO or AWS S3 can replace it. The bucket is created at startup by
+  # -bucket, and again (idempotently) by the api.
+  storage:
+    image: chrislusf/seaweedfs:4.47
+    command:
+      - mini
+      - -dir=/data
+      - -ip=storage
+      - -ip.bind=0.0.0.0
+      - -bucket=${S3_BUCKET:-videos}
+      - -webdav=false
+      - -admin.ui=false
+      - -master.telemetry=false
+      - -s3.port.iceberg=0
+      - -s3.port.lance=0
+    environment:
+      # Credentials of the S3 admin identity; requests must be signed with
+      # them.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-dev-access-key}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-dev-secret-key}
+    ports:
+      - "127.0.0.1:${S3_PORT:-8333}:8333"
+    volumes:
+      - storage-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "8025:8025" # web UI and HTTP API (read by the integration tests)
+      - "127.0.0.1:${MAILHOG_SMTP_PORT:-1025}:1025" # SMTP
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8025/api/v2/messages?limit=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/api.Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-}
+    image: video-processor/api:dev
+    environment:
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15s}
+      READINESS_TIMEOUT: ${READINESS_TIMEOUT:-2s}
+      DATABASE_URL: postgres://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:-video}@postgres:5432/${POSTGRES_DB:-video_processor}?sslmode=disable
+      AMQP_URL: amqp://${RABBITMQ_USER:-video}:${RABBITMQ_PASSWORD:-video}@rabbitmq:5672/
+      S3_ENDPOINT: storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-dev-access-key}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-dev-secret-key}
+      S3_BUCKET: ${S3_BUCKET:-videos}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      # Liveness only: /readyz would make the api unhealthy whenever a
+      # dependency blips.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    # Longer than SHUTDOWN_TIMEOUT, so in-flight requests can finish.
+    stop_grace_period: 20s
+
+  # worker: arrives with its code in Phase 2.3 (consumes video.process,
+  #   ffmpeg + zip; image with ffmpeg; >= 2 processing slots in total, e.g.
+  #   WORKER_CONCURRENCY and/or `deploy.replicas`). The integration suite
+  #   restarts it by the service name "worker".
+  # notifier: arrives with its code in Phase 2.5 (consumes failure events,
+  #   sends e-mail through mailhog:1025).
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  storage-data:

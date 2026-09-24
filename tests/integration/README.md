@@ -41,8 +41,8 @@ These rules apply to every phase and every PR, human or AI agent.
 ## Status: enabled as the services are built
 
 Tests whose behavior is not implemented yet start with `notImplemented(t)`,
-which skips them. Enabled so far: `health_test.go` (Phase 2.1). Every other
-test is still skipped.
+which skips them. Enabled so far: `health_test.go` (Phase 2.1) and
+`auth_test.go` (Phase 2.2). Every other test is still skipped.
 
 To enable a test, delete its `notImplemented(t)` line in the same pull request
 that implements the behavior it checks (Ground rule 4). An enabled test fails

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"video-processor/internal/app"
 )
 
 // DefaultCheckTimeout bounds each readiness check when Options leaves it
@@ -24,6 +26,13 @@ type Options struct {
 	Checks []Check
 	// CheckTimeout bounds each readiness check.
 	CheckTimeout time.Duration
+
+	// Auth serves sign-up and login.
+	Auth AuthService
+	// Tokens verifies the bearer tokens of the /api/v1/videos* routes.
+	Tokens app.TokenVerifier
+	// Videos serves the caller's videos.
+	Videos VideoService
 }
 
 func init() {
@@ -52,6 +61,17 @@ func NewRouter(opts Options) http.Handler {
 
 	r.GET("/healthz", healthz)
 	r.GET("/readyz", readyz(log, opts.Checks, timeout))
+
+	v1 := r.Group("/api/v1")
+	v1.POST("/auth/register", register(log, opts.Auth))
+	v1.POST("/auth/login", login(log, opts.Auth))
+
+	// Every video route requires a bearer token (docs/openapi.yaml).
+	videos := v1.Group("/videos", requireAuth(log, opts.Tokens))
+	videos.GET("", listVideos(log, opts.Videos))
+	videos.POST("", notImplemented)
+	videos.GET("/:id", getVideo(log, opts.Videos))
+	videos.GET("/:id/download", notImplemented)
 	return r
 }
 

@@ -12,6 +12,7 @@ ENV CGO_ENABLED=0
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/ cmd/
+COPY db/ db/
 COPY internal/ internal/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -24,4 +25,5 @@ RUN adduser -D -H -u 10001 app
 COPY --from=build /out/api /usr/local/bin/api
 USER 10001:10001
 EXPOSE 8080
+# `api` serves HTTP; `api migrate` applies the embedded DB migrations.
 ENTRYPOINT ["/usr/local/bin/api"]

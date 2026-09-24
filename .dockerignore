@@ -4,5 +4,6 @@
 !go.mod
 !go.sum
 !cmd/
+!db/
 !internal/
 **/*_test.go

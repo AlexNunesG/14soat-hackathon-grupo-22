@@ -13,7 +13,7 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 .DEFAULT_GOAL := help
 
 .PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down logs docker-build compose-file check clean
+	up down migrate logs docker-build compose-file check clean
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -73,6 +73,9 @@ up: compose-file ## Build and start the local stack, wait until it is healthy
 
 down: compose-file ## Stop the local stack and remove its volumes
 	$(COMPOSE) down -v
+
+migrate: compose-file ## Apply pending DB migrations to the compose postgres (docs/database.md)
+	$(COMPOSE) run --rm --build migrate
 
 logs: compose-file ## Follow the local stack logs
 	$(COMPOSE) logs -f

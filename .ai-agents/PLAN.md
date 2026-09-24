@@ -105,19 +105,22 @@ Key decisions (record each as an ADR in `docs/adr/`):
   retries with backoff, then DLQ + `FAILED` status + notification.
 - Job states: `PENDING → PROCESSING → DONE | FAILED`.
 
-## 5. Open decision: the legacy integration tests
+## 5. Decision: replace the legacy test contract
 
-The existing suite asserts the old contract (synchronous `POST /upload`
-returning the zip, no auth, public `/uploads/*`). That conflicts with RF3
-(auth) and with async processing (RF1/RF2). Options:
+**Decided (2026-09-24):** the legacy contract is dropped. The work is split in
+two ordered steps:
 
-1. **Recommended:** keep the suite as the contract for a *legacy-compatible*
-   milestone (M1 below), then write a new black-box suite for the v1 API
-   (`/api/v1/...`, auth, async) and retire legacy tests explicitly, one PR at a
-   time, documenting why in `tests/integration/README.md`.
-2. Drop the legacy contract immediately and write only the new suite.
+1. **Phase 1 — Rebuild the tests.** Rewrite `tests/integration/` so it
+   describes the *new* behavior (v1 API, authentication, async processing,
+   per-user status, notifications). Legacy tests are deleted. Every new test
+   starts with `notImplemented(t)`, so the suite stays green and doubles as the
+   executable spec.
+2. **Phase 2 — Implement.** Build the services until the new tests pass. Each
+   implementation PR deletes the `notImplemented(t)` lines of the tests it makes
+   pass (same rule as today). The phase is done when
+   `grep -rn 'notImplemented(t)$' tests/integration/` returns nothing.
 
-- [ ] Team decides option 1 or 2 and records it in an ADR.
+- [ ] Record this decision in `docs/adr/0001-replace-legacy-test-contract.md`.
 
 ---
 
@@ -132,107 +135,175 @@ returning the zip, no auth, public `/uploads/*`). That conflicts with RF3
 - [ ] Add `golangci-lint` config and run it in CI.
 - [ ] Remove the stray `__MACOSX/` folder and add it to `.gitignore`.
 
-### Phase 1 (M1) — Rebuild the core processing, cleanly (optional per §5)
-- [ ] Domain package: `Video`, `Job`, `JobStatus`, validation of supported
-      formats (`mp4, avi, mov, mkv, wmv, flv, webm`, any case).
-- [ ] `FrameExtractor` port + ffmpeg adapter (context, timeout, stderr capture).
-- [ ] `Archiver` port + zip adapter.
-- [ ] `Storage` port with local-disk adapter (MinIO adapter comes in Phase 3).
-- [ ] HTTP layer reproducing the legacy contract; re-enable legacy tests one
-      endpoint per PR (`index`, `upload`, `status`, `download`, `static`,
-      `cors`, `startup`, `e2e`).
-- [ ] Unit tests for domain and adapters (table-driven, fakes for ports).
+### Phase 1 — Rebuild the integration tests for the new behavior (tests first)
 
-### Phase 2 — Persistence and authentication (RF3, RT1)
+Goal: a black-box suite that defines the v1 contract before any code exists.
+No production code in this phase.
+
+**1.1 Contract**
+- [ ] Write the v1 contract in `docs/openapi.yaml` (routes, payloads, status
+      codes, error format). The tests assert exactly this file.
+- [ ] Contract summary to cover:
+  - `POST /api/v1/auth/register` → 201; 409 duplicate e-mail; 400 invalid input.
+  - `POST /api/v1/auth/login` → 200 `{token}`; 401 wrong credentials.
+  - `POST /api/v1/videos` (multipart, one or more `videos` files, Bearer
+    token) → 202 `[{id, status: "PENDING"}]`; 400 missing file / unsupported
+    extension (`mp4, avi, mov, mkv, wmv, flv, webm`, any case); 401 no token.
+  - `GET /api/v1/videos` → 200 paginated list of *the caller's* videos
+    `{id, original_name, status, frame_count, error_message, created_at,
+    updated_at}`.
+  - `GET /api/v1/videos/{id}` → 200; 404 for another user's or unknown id.
+  - `GET /api/v1/videos/{id}/download` → 200 zip when `DONE`; 409 when not
+    `DONE`; 404 for another user's video.
+  - `GET /healthz`, `GET /readyz` → 200 when dependencies are up.
+  - States: `PENDING → PROCESSING → DONE | FAILED`.
+
+**1.2 Harness**
+- [ ] Switch the harness to run against the full stack: `BASE_URL` for the API
+      and `MAILHOG_URL` for the mail inbox; `TestMain` optionally runs
+      `docker compose up -d --wait` / `down -v` when `BASE_URL` is not set.
+- [ ] Keep: ffmpeg-generated videos, real ZIP/PNG assertions, `notImplemented(t)`.
+- [ ] New helpers: `registerAndLogin(t)` (unique user per test), authenticated
+      client, `uploadVideos(t, token, files...)`, `waitForStatus(t, token, id,
+      want, timeout)` (polling), `mailsFor(t, email)`.
+- [ ] Remove helpers that depend on the reference app's filesystem
+      (`requireReferenceApp`, `resetWorkspace`, `replaceDirWithFile`, …).
+
+**1.3 Test files (each test starts with `notImplemented(t)`)**
+- [ ] `auth_test.go` — register, duplicate, invalid input, login ok/wrong
+      password, protected routes return 401 without/with invalid/expired token.
+- [ ] `upload_test.go` — 202 + PENDING job, several files in one request,
+      missing field, every unsupported extension, every supported format
+      accepted (any case).
+- [ ] `processing_test.go` — job reaches DONE; frame count follows video
+      duration (1 fps); zip holds `frame_0001.png…` valid PNGs; corrupt video,
+      audio-only file and zero-frame video reach FAILED with `error_message`.
+- [ ] `status_test.go` — list shows only the caller's videos, newest first,
+      pagination; get-by-id; 404 for another user's id.
+- [ ] `download_test.go` — valid zip when DONE, 409 while PENDING/PROCESSING,
+      404 for another user / unknown id.
+- [ ] `concurrency_test.go` — **RF1**: N videos uploaded together are
+      processed in parallel (e.g. total time < sum of individual times, or
+      several PROCESSING at once).
+- [ ] `resilience_test.go` — **RF2**: burst of M concurrent uploads, every one
+      accepted and eventually DONE (none lost); optional: stop/restart a worker
+      mid-run (`docker compose restart worker`) and nothing is lost.
+- [ ] `notification_test.go` — **RF5**: a failed video produces an e-mail to
+      the owner (MailHog API) naming the video and the error; a successful one
+      does not send a failure mail.
+- [ ] `health_test.go` — `/healthz` and `/readyz`.
+- [ ] `e2e_test.go` — register → login → upload several → poll → list →
+      download → failure mail.
+
+**1.4 Clean up**
+- [ ] Delete legacy tests: `index_test.go`, `static_test.go`, `cors_test.go`,
+      `startup_test.go` and the old `upload/status/download/e2e` bodies.
+      (Startup/graceful-shutdown checks move to per-service unit tests in
+      Phase 2.)
+- [ ] Rewrite `tests/integration/README.md` (new contract, how to run against
+      compose, status of pending tests) and drop the legacy "Contract notes".
+- [ ] CI still green: gofmt, vet, and the suite with everything skipped.
+
+### Phase 2 — Implement the new behavior (until every test is enabled)
+
+Rule for every PR in this phase: delete the `notImplemented(t)` lines of the
+tests it makes pass, and tick the items here.
+
+**2.1 Foundation**
+- [ ] `docker-compose.yml` with the infra the tests need: postgres, redis,
+      rabbitmq (management), minio, mailhog. `.env.example`, no secrets
+      committed.
+- [ ] Domain package: `User`, `Video`/`Job`, `JobStatus`, supported-format
+      validation.
+- [ ] Ports + adapters: `FrameExtractor` (ffmpeg, context + timeout, stderr
+      capture), `Archiver` (zip), `Storage` (MinIO/S3), `JobRepository`,
+      `UserRepository`, `Publisher`/`Consumer`, `Mailer`.
+- [ ] Unit tests for domain and adapters (table-driven, fakes for ports).
+- [ ] Enables: `health_test.go`.
+
+**2.2 Persistence and authentication (RF3, RT1)**
 - [ ] `db/migrations/` with versioned SQL (golang-migrate or goose):
       `users (id, email, name, password_hash, created_at)`,
-      `videos/jobs (id, user_id, original_name, storage_key, zip_key, status,
+      `videos (id, user_id, original_name, storage_key, zip_key, status,
       frame_count, error_message, created_at, updated_at)`, indexes on
       `(user_id, created_at)` and `status`. → **D2**
-- [ ] Repository layer (pgx) with integration tests against real Postgres
-      (testcontainers or compose service in CI).
-- [ ] `POST /api/v1/auth/register`, `POST /api/v1/auth/login` (bcrypt, JWT with
-      expiry; secret from env).
-- [ ] Auth middleware on all `/api/v1/videos*` routes; 401 without/invalid token.
-- [ ] Users only see and download their own videos (403/404 otherwise) — test it.
+- [ ] Repository layer (pgx) with integration tests against real Postgres.
+- [ ] Register/login (bcrypt, JWT with expiry; secret from env).
+- [ ] Auth middleware on all `/api/v1/videos*` routes.
+- [ ] Ownership checks on every video route.
+- [ ] Enables: `auth_test.go`.
 
-### Phase 3 — Messaging and async processing (RF1, RF2, RT2)
+**2.3 Messaging and async processing (RF1, RF2, RT2)**
 - [ ] RabbitMQ topology as code: exchange `videos`, queues `video.process`,
-      `video.notify`, DLX + DLQ, durable queues, persistent messages.
-- [ ] MinIO adapter for `Storage`; bucket bootstrap script. → **D2**
-- [ ] `POST /api/v1/videos` (multipart, multiple files allowed): stream to
-      storage, insert job `PENDING`, publish with publisher confirms, return
-      `202 Accepted` with job ids.
+      `video.notify`, DLX + DLQ, durable queues, persistent messages. → **D2**
+- [ ] MinIO bucket bootstrap script. → **D2**
+- [ ] `POST /api/v1/videos`: stream to storage, insert job `PENDING`, publish
+      with publisher confirms, return 202.
 - [ ] Outbox pattern *or* publish-then-commit with reconciliation, so no job is
-      stuck if the broker is down (document the choice).
+      stuck if the broker is down (document the choice in an ADR).
 - [ ] Worker service: prefetch = concurrency, manual ack, `PROCESSING` →
       `DONE`/`FAILED`, retries with backoff, DLQ after N attempts, idempotency.
-- [ ] Worker concurrency configurable (goroutine pool) + horizontal replicas.
+- [ ] Worker concurrency configurable (goroutine pool) + horizontal replicas
+      (`docker compose up --scale worker=3`).
 - [ ] Temp files cleaned on success and failure; ffmpeg timeout.
-- [ ] Graceful shutdown in every service (finish/requeue in-flight messages).
-- [ ] Load test (k6 or vegeta) proving no lost requests during a spike;
-      save results in `docs/`. → evidence for **RF2**
+- [ ] Graceful shutdown in every service (finish/requeue in-flight messages),
+      with unit tests.
+- [ ] Enables: `upload_test.go`, `processing_test.go`,
+      `concurrency_test.go`, `resilience_test.go`.
 
-### Phase 4 — Status listing and download (RF4)
-- [ ] `GET /api/v1/videos` — paginated list of the user's videos with status,
-      frame count, error message, timestamps.
-- [ ] `GET /api/v1/videos/{id}` — single job status.
-- [ ] `GET /api/v1/videos/{id}/download` — zip stream or presigned URL; 409 if
-      not `DONE`.
-- [ ] Redis cache for the list (invalidate on status change) — optional but in
-      the recommended stack.
+**2.4 Status listing and download (RF4)**
+- [ ] `GET /api/v1/videos` (paginated), `GET /api/v1/videos/{id}`.
+- [ ] `GET /api/v1/videos/{id}/download` (stream or presigned URL).
+- [ ] Redis cache for the list (invalidate on status change).
 - [ ] Simple web UI (login, upload, status table with polling, download).
+- [ ] Enables: `status_test.go`, `download_test.go`.
 
-### Phase 5 — Notifications (RF5)
+**2.5 Notifications (RF5)**
 - [ ] Worker publishes `video.failed` (and `video.processed`) events.
 - [ ] Notifier service consumes and sends e-mail via SMTP (MailHog in compose,
       real SMTP via env in prod); templated message with video name and reason.
-- [ ] Retry + DLQ for notification failures; tests with a fake mailer.
+- [ ] Retry + DLQ for notification failures; unit tests with a fake mailer.
+- [ ] Enables: `notification_test.go`, `e2e_test.go`.
 
-### Phase 6 — Observability
+- [ ] **Exit check:** `grep -rn 'notImplemented(t)$' tests/integration/` is
+      empty and CI is green.
+
+### Phase 3 — Observability
 - [ ] Structured logs (`log/slog`, JSON) with request/job correlation id.
 - [ ] `/metrics` (Prometheus) on each service: HTTP latency/count, jobs
       processed/failed, processing duration, queue depth (RabbitMQ exporter).
-- [ ] `/healthz` (liveness) and `/readyz` (DB, broker, storage) endpoints.
 - [ ] Prometheus + Grafana in compose with a provisioned dashboard.
 
-### Phase 7 — Containers and infrastructure (RT2)
+### Phase 4 — Containers and infrastructure (RT2)
 - [ ] Multi-stage Dockerfile per service (worker image includes ffmpeg),
       non-root user.
-- [ ] `docker-compose.yml`: postgres, redis, rabbitmq (management), minio,
-      mailhog, prometheus, grafana, api, worker (scalable:
-      `docker compose up --scale worker=3`), notifier.
-- [ ] `.env.example` documenting every variable; no secrets committed.
+- [ ] Add api, worker, notifier, prometheus and grafana to `docker-compose.yml`.
 - [ ] Kubernetes manifests (or Helm/Kustomize) in `deploy/k8s/`: Deployments,
       Services, ConfigMaps, Secrets, HPA for api and worker (KEDA on queue
       length as a stretch goal).
+- [ ] Load test (k6 or vegeta) proving no lost requests during a spike;
+      save results in `docs/`. → evidence for **RF2**
 
-### Phase 8 — Quality (RT4)
-- [ ] Unit tests for domain, use cases and adapters.
-- [ ] Integration tests with real Postgres/RabbitMQ/MinIO (testcontainers or
-      compose in CI).
-- [ ] New black-box E2E suite for v1: register → login → upload several videos
-      → poll status → download → failure path triggers notification (checks
-      MailHog API).
+### Phase 5 — Quality (RT4)
 - [ ] Coverage report in CI; target ≥ 80% on domain/use cases.
 - [ ] Static analysis: `golangci-lint`, `govulncheck`; optional SonarCloud.
 
-### Phase 9 — CI/CD (RT5)
-- [ ] CI: lint, vet, unit, integration, E2E on every PR (matrix per service).
+### Phase 6 — CI/CD (RT5)
+- [ ] CI: lint, vet, unit tests, then `docker compose up` and the integration
+      suite on every PR (matrix per service).
 - [ ] Build and push images to GHCR on merge to `main` (tag = commit SHA +
       `latest`).
 - [ ] CD: deploy job (to a k8s cluster, or compose on a VM) triggered after
       images are pushed; document required secrets.
 - [ ] Branch protection on `main` requiring CI to pass.
 
-### Phase 10 — Documentation and delivery (D1–D4)
+### Phase 7 — Documentation and delivery (D1–D4)
 - [ ] `README.md`: overview, how to run locally in one command, how to test,
       API examples (curl), env vars.
 - [ ] `docs/architecture.md`: context + container diagrams (C4 / Mermaid),
       sequence diagrams (upload, processing, failure notification), data model.
       → **D1**
 - [ ] `docs/adr/` with the decisions from §4 and §5.
-- [ ] OpenAPI spec for the v1 API (`docs/openapi.yaml`).
 - [ ] DB and resource scripts referenced from the README (migrations, RabbitMQ
       definitions, MinIO bucket). → **D2**
 - [ ] Final GitHub repository link(s) collected for submission. → **D3**
@@ -245,25 +316,26 @@ returning the zip, no auth, public `/uploads/*`). That conflicts with RF3
 
 ## 7. Requirement traceability
 
-| Req | Covered by | Done |
-|---|---|---|
-| RF1 Parallel processing | Phase 3 (queue + worker pool + replicas) | [ ] |
-| RF2 No lost requests on peaks | Phase 3 (durable queue, confirms, ack, DLQ, outbox, load test) | [ ] |
-| RF3 User/password protection | Phase 2 (register/login, JWT, ownership checks) | [ ] |
-| RF4 Status listing per user | Phase 4 | [ ] |
-| RF5 Error notification | Phase 5 | [ ] |
-| RT1 Persistence | Phase 2 (Postgres) + Phase 3 (object storage) | [ ] |
-| RT2 Scalable | Phases 3 & 7 (stateless services, compose scale, k8s HPA) | [ ] |
-| RT3 GitHub versioning | Repo exists; PR-based flow | [x] |
-| RT4 Tests | Phase 8 (+ existing integration suite) | [ ] |
-| RT5 CI/CD | Phase 9 (CI exists, CD missing) | [ ] |
-| D1 Architecture docs | Phase 10 | [ ] |
-| D2 DB/resource scripts | Phases 2, 3, 10 | [ ] |
-| D3 GitHub link | Phase 10 | [ ] |
-| D4 ≤ 10-min video | Phase 10 | [ ] |
+| Req | Test (Phase 1) | Implementation | Done |
+|---|---|---|---|
+| RF1 Parallel processing | `concurrency_test.go` | 2.3 (queue + worker pool + replicas) | [ ] |
+| RF2 No lost requests on peaks | `resilience_test.go` | 2.3 (durable queue, confirms, ack, DLQ, outbox) + Phase 4 load test | [ ] |
+| RF3 User/password protection | `auth_test.go` | 2.2 (register/login, JWT, ownership checks) | [ ] |
+| RF4 Status listing per user | `status_test.go`, `download_test.go` | 2.4 | [ ] |
+| RF5 Error notification | `notification_test.go` | 2.5 | [ ] |
+| RT1 Persistence | all (state survives across requests) | 2.2 (Postgres) + 2.3 (object storage) | [ ] |
+| RT2 Scalable | `concurrency_test.go` | 2.3 + Phase 4 (stateless services, compose scale, k8s HPA) | [ ] |
+| RT3 GitHub versioning | — | Repo exists; PR-based flow | [x] |
+| RT4 Tests | Phase 1 suite | Phase 2 unit tests + Phase 5 | [ ] |
+| RT5 CI/CD | — | Phase 6 (CI exists, CD missing) | [ ] |
+| D1 Architecture docs | — | Phase 7 | [ ] |
+| D2 DB/resource scripts | — | 2.2, 2.3, Phase 7 | [ ] |
+| D3 GitHub link | — | Phase 7 | [ ] |
+| D4 ≤ 10-min video | — | Phase 7 | [ ] |
 
 ## 8. Progress log
 
 | Date | Change |
 |---|---|
 | 2026-09-24 | Plan created; challenge PDF added to `.ai-agents/`. |
+| 2026-09-24 | §5 decided: Phase 1 rebuilds the tests for the new behavior, Phase 2 implements it. Phases renumbered. |

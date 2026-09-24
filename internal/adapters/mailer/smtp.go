@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"video-processor/internal/app"
+	"video-processor/internal/platform/logging"
 )
 
 // TLS modes of Config.TLS.
@@ -110,7 +111,8 @@ func New(cfg Config) (*SMTP, error) {
 func (s *SMTP) Send(ctx context.Context, m app.Mail) error {
 	to, err := mail.ParseAddress(m.To)
 	if err != nil {
-		return fmt.Errorf("mailer: invalid recipient %q: %w: %w", m.To, app.ErrPermanent, err)
+		// The error is logged: mask the address (docs/observability.md).
+		return fmt.Errorf("mailer: invalid recipient %q: %w: %w", logging.MaskEmail(m.To), app.ErrPermanent, err)
 	}
 	msg, err := s.compose(m, to)
 	if err != nil {

@@ -72,6 +72,12 @@ mandatory: the broker confirms it and drops it while no queue is bound, and
 the outbox does not fill up with events nobody reads. Binding a queue to
 `video.processed` later needs no change in the worker. The header `attempt`
 (absent = 1) counts deliveries across retries.
+The standard `correlation-id` property carries the request id of the upload
+that caused the message (its `X-Request-ID`): the outbox stores it with the
+row, consumers restore it into the context of their handler, and the
+worker's events inherit it from the job, so the logs of one upload can be
+followed across services ([`observability.md`](observability.md)). Retries
+keep it.
 
 ### Video events
 

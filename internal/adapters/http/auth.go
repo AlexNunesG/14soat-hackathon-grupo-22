@@ -14,6 +14,7 @@ import (
 
 	"video-processor/internal/app"
 	"video-processor/internal/domain"
+	"video-processor/internal/platform/logging"
 )
 
 // AuthService is what the auth handlers need from the app (app.Auth).
@@ -140,7 +141,7 @@ func writeAppError(c *gin.Context, log *slog.Logger, err error) {
 		return
 	}
 	log.ErrorContext(c.Request.Context(), "request failed",
-		slog.String("path", c.Request.URL.Path), slog.Any("error", err))
+		slog.String("route", routeOf(c)), slog.Any("error", err))
 	WriteError(c, http.StatusInternalServerError, CodeInternal, "internal server error")
 }
 
@@ -160,6 +161,7 @@ func requireAuth(log *slog.Logger, tokens app.TokenVerifier) gin.HandlerFunc {
 			return
 		}
 		c.Set(userIDKey, userID)
+		withLogAttrs(c, slog.String(logging.KeyUserID, userID))
 		c.Next()
 	}
 }

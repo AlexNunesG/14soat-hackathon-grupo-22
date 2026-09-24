@@ -2,6 +2,7 @@ package rabbitmq
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"video-processor/internal/app"
+	"video-processor/internal/platform/logging"
 )
 
 // Defaults of the consumer.
@@ -266,56 +268,89 @@ func (c *Consumer) stop(s *session) {
 
 func requeue(d amqp.Delivery) { _ = d.Nack(false, true) }
 
-// handle processes one delivery and settles it (see Consumer).
+// handle processes one delivery and settles it (see Consumer). The
+// handler's context carries the delivery's correlation fields
+// (deliveryContext), so every log line about the message has them.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	attempt := attemptOf(d.Headers)
-	log := c.log.With(slog.String("message_id", d.MessageId), slog.Int("attempt", attempt))
+	ctx = deliveryContext(ctx, d, attempt)
 	err := c.handler.Handle(ctx, d.Body)
 	switch {
 	case err == nil:
-		c.settle(log, "ack", d.Ack(false))
+		c.settle(ctx, "ack", d.Ack(false))
 
 	case ctx.Err() != nil:
-		log.Warn("message interrupted by shutdown; requeued", slog.Any("error", err))
-		c.settle(log, "requeue", d.Nack(false, true))
+		c.log.WarnContext(ctx, "message interrupted by shutdown; requeued", slog.Any("error", err))
+		c.settle(ctx, "requeue", d.Nack(false, true))
 
 	case errors.Is(err, app.ErrMalformedMessage):
-		log.Error("malformed message dead-lettered", slog.Any("error", err))
-		c.settle(log, "dead-letter", d.Nack(false, false))
+		c.log.ErrorContext(ctx, "malformed message dead-lettered", slog.Any("error", err))
+		c.settle(ctx, "dead-letter", d.Nack(false, false))
 
 	case errors.Is(err, app.ErrPermanent):
-		log.Error("message failed permanently; dead-lettered without retry", slog.Any("error", err))
-		c.settle(log, "dead-letter", d.Nack(false, false))
+		c.log.ErrorContext(ctx, "message failed permanently; dead-lettered without retry", slog.Any("error", err))
+		c.settle(ctx, "dead-letter", d.Nack(false, false))
 
 	case attempt < c.cfg.MaxAttempts:
-		log.Warn("message failed; retrying later",
+		c.log.WarnContext(ctx, "message failed; retrying later",
 			slog.Duration("in", c.cfg.Queue.RetryDelays[attempt-1]), slog.Any("error", err))
 		if rerr := c.retrier.Retry(ctx, c.cfg.Queue, d, attempt+1); rerr != nil {
-			log.Error("could not schedule the retry; requeued", slog.Any("error", rerr))
+			c.log.ErrorContext(ctx, "could not schedule the retry; requeued", slog.Any("error", rerr))
 			sleep(ctx, requeueDelay)
-			c.settle(log, "requeue", d.Nack(false, true))
+			c.settle(ctx, "requeue", d.Nack(false, true))
 			return
 		}
-		c.settle(log, "ack", d.Ack(false))
+		c.settle(ctx, "ack", d.Ack(false))
 
 	default:
-		log.Error("message failed on its last attempt; giving up", slog.Any("error", err))
+		c.log.ErrorContext(ctx, "message failed on its last attempt; giving up", slog.Any("error", err))
 		if gerr := c.handler.GiveUp(ctx, d.Body, err); gerr != nil {
-			log.Error("could not record the failure; requeued", slog.Any("error", gerr))
+			c.log.ErrorContext(ctx, "could not record the failure; requeued", slog.Any("error", gerr))
 			sleep(ctx, requeueDelay)
-			c.settle(log, "requeue", d.Nack(false, true))
+			c.settle(ctx, "requeue", d.Nack(false, true))
 			return
 		}
-		c.settle(log, "dead-letter", d.Nack(false, false))
+		c.settle(ctx, "dead-letter", d.Nack(false, false))
 	}
 }
 
 // settle logs a failed ack/nack: the channel is gone, and the broker
 // redelivers the message to another consumer.
-func (c *Consumer) settle(log *slog.Logger, what string, err error) {
+func (c *Consumer) settle(ctx context.Context, what string, err error) {
 	if err != nil {
-		log.Warn("could not "+what+" the message; the broker will redeliver it", slog.Any("error", err))
+		c.log.WarnContext(ctx, "could not "+what+" the message; the broker will redeliver it", slog.Any("error", err))
 	}
+}
+
+// bodyIDs are the ids a message body may carry: video_id in every message
+// of the videos exchange, event_id in video events.
+type bodyIDs struct {
+	VideoID string `json:"video_id"`
+	EventID string `json:"event_id"`
+}
+
+// deliveryContext returns ctx with the correlation fields of d
+// (docs/observability.md): its correlation id as request_id (when it is a
+// valid one), message_id, attempt, and the video_id and event_id of its
+// body when they are UUIDs. A malformed body only adds nothing.
+func deliveryContext(ctx context.Context, d amqp.Delivery, attempt int) context.Context {
+	attrs := []slog.Attr{
+		slog.String(logging.KeyMessageID, d.MessageId),
+		slog.Int(logging.KeyAttempt, attempt),
+	}
+	if logging.ValidRequestID(d.CorrelationId) {
+		attrs = append([]slog.Attr{slog.String(logging.KeyRequestID, d.CorrelationId)}, attrs...)
+	}
+	var ids bodyIDs
+	if json.Unmarshal(d.Body, &ids) == nil {
+		if uuid.Validate(ids.VideoID) == nil {
+			attrs = append(attrs, slog.String(logging.KeyVideoID, ids.VideoID))
+		}
+		if uuid.Validate(ids.EventID) == nil {
+			attrs = append(attrs, slog.String(logging.KeyEventID, ids.EventID))
+		}
+	}
+	return logging.WithAttrs(ctx, attrs...)
 }
 
 // consumerTag is unique per consumer: name, host and a random suffix.

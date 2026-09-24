@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"video-processor/internal/app"
+	"video-processor/internal/platform/logging"
 )
 
 // Backoff of messages whose publish failed: 1s, 2s, 4s, ... up to
@@ -20,7 +21,7 @@ const (
 )
 
 // Outbox is the PostgreSQL app.OutboxStore: the table outbox
-// (db/migrations/00002_create_outbox.sql, ADR 0004).
+// (db/migrations/00002_create_outbox.sql and 00004, ADR 0004).
 type Outbox struct {
 	db DB
 }
@@ -30,12 +31,18 @@ var _ app.OutboxStore = (*Outbox)(nil)
 // NewOutbox returns the outbox store over db.
 func NewOutbox(db DB) *Outbox { return &Outbox{db: db} }
 
-// enqueue inserts msgs into the outbox, within the caller's transaction.
+// enqueue inserts msgs into the outbox, within the caller's transaction. A
+// message without a CorrelationID gets the request id of ctx (the upload's
+// X-Request-ID in the api, the job's in the worker; logging.RequestID).
 func enqueue(ctx context.Context, tx pgx.Tx, msgs []app.Message) error {
 	for _, m := range msgs {
+		corr := m.CorrelationID
+		if corr == "" {
+			corr = logging.RequestID(ctx)
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO outbox (message_id, topic, payload) VALUES ($1, $2, $3)`,
-			m.ID, m.Topic, string(m.Body)); err != nil {
+			`INSERT INTO outbox (message_id, topic, payload, correlation_id) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+			m.ID, m.Topic, string(m.Body), corr); err != nil {
 			return fmt.Errorf("postgres: insert outbox message: %w", err)
 		}
 	}
@@ -86,7 +93,7 @@ func (o *Outbox) Relay(ctx context.Context, limit int, publish app.PublishFunc) 
 
 func claim(ctx context.Context, tx pgx.Tx, limit int) ([]int64, []app.Message, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, message_id, topic, payload::text FROM outbox
+		SELECT id, message_id, topic, payload::text, COALESCE(correlation_id, '') FROM outbox
 		WHERE available_at <= clock_timestamp()
 		ORDER BY id
 		LIMIT $1
@@ -105,7 +112,7 @@ func claim(ctx context.Context, tx pgx.Tx, limit int) ([]int64, []app.Message, e
 			m    app.Message
 			body string
 		)
-		if err := rows.Scan(&id, &m.ID, &m.Topic, &body); err != nil {
+		if err := rows.Scan(&id, &m.ID, &m.Topic, &body, &m.CorrelationID); err != nil {
 			return nil, nil, fmt.Errorf("postgres: scan outbox message: %w", err)
 		}
 		m.Body = []byte(body)

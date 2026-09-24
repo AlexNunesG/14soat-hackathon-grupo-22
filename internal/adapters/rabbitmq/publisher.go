@@ -93,28 +93,33 @@ func (p *Publisher) AllowUnrouted(topics ...string) {
 }
 
 // Publish publishes msgs to the publisher's exchange, each with its Topic
-// as routing key and its ID as message id, and returns one error per
-// message, in order (nil: confirmed). At most maxBatch messages are sent at
-// once; the rest fail and are retried by the caller.
+// as routing key, its ID as message id and its CorrelationID as
+// correlation id, and returns one error per message, in order (nil:
+// confirmed). At most maxBatch messages are sent at once; the rest fail and
+// are retried by the caller.
 func (p *Publisher) Publish(ctx context.Context, msgs []app.Message) []error {
 	out := make([]outgoing, len(msgs))
 	for i, m := range msgs {
-		out[i] = outgoing{
-			exchange: p.exchange,
-			key:      m.Topic,
-			msg: amqp.Publishing{
-				ContentType: "application/json",
-				MessageId:   m.ID,
-				Body:        m.Body,
-			},
-		}
+		out[i] = outgoing{exchange: p.exchange, key: m.Topic, msg: publishing(m)}
 	}
 	return p.publish(ctx, out)
 }
 
+// publishing is the AMQP message of m. The correlation id travels in the
+// standard correlation-id property, which consumers restore into the
+// context of their handlers (docs/observability.md).
+func publishing(m app.Message) amqp.Publishing {
+	return amqp.Publishing{
+		ContentType:   "application/json",
+		MessageId:     m.ID,
+		CorrelationId: m.CorrelationID,
+		Body:          m.Body,
+	}
+}
+
 // Retry republishes a delivery to the retry queue that delays its attempt
 // number attempt (2 for the first retry) of work queue w, keeping its body,
-// message id and headers.
+// message id, correlation id and headers.
 func (p *Publisher) Retry(ctx context.Context, w WorkQueue, d amqp.Delivery, attempt int) error {
 	if attempt < 2 || attempt > w.MaxAttempts() {
 		return fmt.Errorf("rabbitmq: no retry queue for attempt %d of %s", attempt, w.Queue)
@@ -131,10 +136,11 @@ func (p *Publisher) Retry(ctx context.Context, w WorkQueue, d amqp.Delivery, att
 		exchange: "", // the default exchange routes by queue name
 		key:      w.RetryQueue(attempt - 1),
 		msg: amqp.Publishing{
-			ContentType: d.ContentType,
-			MessageId:   d.MessageId,
-			Headers:     headers,
-			Body:        d.Body,
+			ContentType:   d.ContentType,
+			MessageId:     d.MessageId,
+			CorrelationId: d.CorrelationId,
+			Headers:       headers,
+			Body:          d.Body,
 		},
 	}})
 	return errs[0]

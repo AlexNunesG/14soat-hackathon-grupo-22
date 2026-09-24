@@ -334,7 +334,7 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       stack). The `notImplemented` helper stays for future tests (lint exclusion).
 
 ### Phase 3 — Observability
-- [ ] Structured logs (`log/slog`, JSON) with request/job correlation id.
+- [x] Structured logs (`log/slog`, JSON) with request/job correlation id: `X-Request-ID` → outbox `correlation_id` → AMQP `correlation-id` → worker and notifier logs ([`docs/observability.md`](../docs/observability.md)).
 - [ ] `/metrics` (Prometheus) on each service: HTTP latency/count, jobs
       processed/failed, processing duration, queue depth (RabbitMQ exporter).
 - [ ] Prometheus + Grafana in compose with a provisioned dashboard.

@@ -28,6 +28,12 @@ type Message struct {
 	ID    string
 	Topic string
 	Body  []byte
+	// CorrelationID is the id of the request that caused the message (the
+	// upload's X-Request-ID), carried from service to service so the logs
+	// of one upload can be followed (docs/observability.md). The outbox
+	// fills it from the context of the transaction that queues the
+	// message; it may be empty.
+	CorrelationID string
 }
 
 // VideoUploaded is the payload of TopicVideoUploaded. It carries only the

@@ -7,6 +7,31 @@ and add a short note or link (PR, file) when useful. Keep the **Requirement
 traceability** table in sync: a requirement is done only when every item that
 maps to it is ticked.
 
+## Ground rules: the tests are the spec
+
+These rules apply to every phase and every PR, human or AI agent.
+
+1. **The integration tests are the specification.** Once Phase 1 is merged,
+   `tests/integration/` (with `docs/openapi.yaml`) defines what the system must
+   do. When code and tests disagree, the code is wrong.
+2. **The challenge PDF wins over the tests.** The only valid reason to change
+   the expected behavior of a test is that it contradicts, or fails to cover,
+   a requirement in the PDF (§2). In that case:
+   - fix the test in its own PR, separate from implementation code;
+   - explain in the PR description which requirement (RF/RT/D id) the test
+     got wrong and why;
+   - update `docs/openapi.yaml` and this plan in the same PR.
+3. **Avoid changing tests.** Do not edit an assertion, timeout, status code or
+   payload to make an implementation pass. Allowed without the process above:
+   fixing a bug in the harness or a helper that does not change what is
+   asserted, and adding *new* tests for uncovered behavior.
+4. **Enable tests as features are implemented.** Each implementation PR
+   deletes the `notImplemented(t)` line of every test it makes pass — no
+   later, no earlier. A test is never enabled without the code that makes it
+   pass, and a feature is never merged while its tests are still skipped.
+5. **Never skip, disable or weaken a test to get green CI.** Re-adding
+   `notImplemented(t)` to an enabled test counts as disabling it.
+
 ---
 
 ## 1. The challenge in one paragraph
@@ -120,7 +145,12 @@ two ordered steps:
    pass (same rule as today). The phase is done when
    `grep -rn 'notImplemented(t)$' tests/integration/` returns nothing.
 
+After Phase 1, the new suite is the spec and follows the **Ground rules**
+at the top of this plan.
+
 - [ ] Record this decision in `docs/adr/0001-replace-legacy-test-contract.md`.
+- [ ] Copy the Ground rules into `tests/integration/README.md` (Phase 1.4) and
+      a `CLAUDE.md` / `CONTRIBUTING.md` so every contributor and agent sees them.
 
 ---
 
@@ -206,8 +236,10 @@ No production code in this phase.
 
 ### Phase 2 — Implement the new behavior (until every test is enabled)
 
-Rule for every PR in this phase: delete the `notImplemented(t)` lines of the
-tests it makes pass, and tick the items here.
+Follow the **Ground rules** above. In short: implement against the tests
+without changing them; in the same PR, delete the `notImplemented(t)` line of
+every test it makes pass and tick the items here. If a test contradicts the
+challenge PDF, fix the test first in a separate PR (Ground rule 2).
 
 **2.1 Foundation**
 - [ ] `docker-compose.yml` with the infra the tests need: postgres, redis,
@@ -339,3 +371,4 @@ tests it makes pass, and tick the items here.
 |---|---|
 | 2026-09-24 | Plan created; challenge PDF added to `.ai-agents/`. |
 | 2026-09-24 | §5 decided: Phase 1 rebuilds the tests for the new behavior, Phase 2 implements it. Phases renumbered. |
+| 2026-09-24 | Added Ground rules: tests are the spec (PDF wins on conflict), avoid changing them, enable them with the feature. |

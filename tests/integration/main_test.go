@@ -70,6 +70,12 @@ var (
 
 	// errNoApp explains why there is no app to test; enabled tests fail with it.
 	errNoApp = errors.New("no app to test: set BASE_URL or add deploy/docker-compose.yml")
+
+	// startedStack is the compose stack TestMain started, or nil when the
+	// suite does not control the stack (BASE_URL mode, or nothing started).
+	// Tests that act on the stack itself, such as restarting a service,
+	// need it.
+	startedStack *composeStack
 )
 
 func TestMain(m *testing.M) {
@@ -106,6 +112,7 @@ func run(m *testing.M) int {
 		stack.down()
 		return 1
 	}
+	startedStack = stack
 	baseURL = stackBaseURL
 	waitForApp()
 	code := m.Run()

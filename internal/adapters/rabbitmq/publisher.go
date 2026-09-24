@@ -34,7 +34,8 @@ var (
 // Publisher publishes persistent messages with publisher confirms: a
 // message counts as published only once the broker has confirmed it, which
 // for a durable queue means it has been written to disk. Messages are
-// mandatory, so one no queue would receive is reported instead of dropped.
+// mandatory, so one no queue would receive is reported instead of dropped
+// (except the routing keys allowed with AllowUnrouted).
 //
 // It keeps one connection, opened on first use and reopened after any
 // failure; on every (re)connection it declares its topology. It is safe
@@ -45,6 +46,8 @@ type Publisher struct {
 	exchange string
 	topology []WorkQueue
 	log      *slog.Logger
+	// unrouted holds the routing keys published without the mandatory flag.
+	unrouted map[string]bool
 
 	mu      sync.Mutex
 	conn    *amqp.Connection
@@ -62,7 +65,31 @@ func NewPublisher(url, name, exchange string, log *slog.Logger, topology ...Work
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Publisher{url: url, name: name, exchange: exchange, topology: topology, log: log}, nil
+	return &Publisher{url: url, name: name, exchange: exchange, topology: topology, log: log, unrouted: map[string]bool{}}, nil
+}
+
+// NewOutboxPublisher returns the publisher of the outbox relays (api and
+// worker): it declares the whole Topology and publishes UnroutedTopics
+// without the mandatory flag. Every relay uses it, so any replica can
+// publish any outbox row.
+func NewOutboxPublisher(url, name string, log *slog.Logger) (*Publisher, error) {
+	p, err := NewPublisher(url, name, ExchangeVideos, log, Topology...)
+	if err != nil {
+		return nil, err
+	}
+	p.AllowUnrouted(UnroutedTopics...)
+	return p, nil
+}
+
+// AllowUnrouted makes messages with these routing keys non-mandatory: when
+// no queue is bound for them the broker drops them and still confirms,
+// instead of returning them as ErrUnroutable. Call it before publishing.
+func (p *Publisher) AllowUnrouted(topics ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, t := range topics {
+		p.unrouted[t] = true
+	}
 }
 
 // Publish publishes msgs to the publisher's exchange, each with its Topic
@@ -145,7 +172,8 @@ func (p *Publisher) publish(ctx context.Context, batch []outgoing) []error {
 		msg := o.msg
 		msg.DeliveryMode = amqp.Persistent
 		msg.Timestamp = time.Now().UTC()
-		dc, err := p.ch.PublishWithDeferredConfirmWithContext(ctx, o.exchange, o.key, true, false, msg)
+		mandatory := !p.unrouted[o.key]
+		dc, err := p.ch.PublishWithDeferredConfirmWithContext(ctx, o.exchange, o.key, mandatory, false, msg)
 		if err != nil {
 			p.reset()
 			return fail(i, fmt.Errorf("rabbitmq: publish: %w", err))

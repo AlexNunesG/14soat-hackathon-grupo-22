@@ -75,6 +75,74 @@
         "x-message-ttl": 30000,
         "x-queue-type": "classic"
       }
+    },
+    {
+      "name": "video.notify",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "videos.dlx",
+        "x-dead-letter-routing-key": "video.notify",
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.notify.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.notify.retry.1",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.notify",
+        "x-message-ttl": 10000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.notify.retry.2",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.notify",
+        "x-message-ttl": 60000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.notify.retry.3",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.notify",
+        "x-message-ttl": 300000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "video.notify.retry.4",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "",
+        "x-dead-letter-routing-key": "video.notify",
+        "x-message-ttl": 900000,
+        "x-queue-type": "classic"
+      }
     }
   ],
   "bindings": [
@@ -92,6 +160,22 @@
       "destination": "video.process.dlq",
       "destination_type": "queue",
       "routing_key": "video.process",
+      "arguments": {}
+    },
+    {
+      "source": "videos",
+      "vhost": "/",
+      "destination": "video.notify",
+      "destination_type": "queue",
+      "routing_key": "video.failed",
+      "arguments": {}
+    },
+    {
+      "source": "videos.dlx",
+      "vhost": "/",
+      "destination": "video.notify.dlq",
+      "destination_type": "queue",
+      "routing_key": "video.notify",
       "arguments": {}
     }
   ]

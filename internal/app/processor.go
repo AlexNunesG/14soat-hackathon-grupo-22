@@ -25,8 +25,13 @@ import (
 //     zip goes to a fresh key, and only the first run to finish records
 //     DONE, the others remove their zip;
 //   - every status change is conditional on the current status.
+//
+// A final status change also queues its event (TopicVideoFailed or
+// TopicVideoProcessed) in the outbox, in the same transaction, so exactly
+// the run that wins the change records the event (RF5).
 type Processor struct {
 	repo      ProcessingRepository
+	users     UserReader
 	storage   ObjectStorage
 	extractor FrameExtractor
 	archiver  Archiver
@@ -35,6 +40,7 @@ type Processor struct {
 	now       func() time.Time
 	newID     func() string
 	lists     ListInvalidator
+	onEvent   func()
 }
 
 // ProcessorOption customizes Processor.
@@ -67,16 +73,25 @@ func WithProcessorListInvalidator(inv ListInvalidator) ProcessorOption {
 	return func(p *Processor) { p.lists = inv }
 }
 
-// NewProcessor returns the processing use case.
-func NewProcessor(repo ProcessingRepository, storage ObjectStorage, extractor FrameExtractor, archiver Archiver, opts ...ProcessorOption) *Processor {
+// OnEvent sets a function called after an event was committed to the
+// outbox, e.g. OutboxRelay.Notify, so it is published at once.
+func OnEvent(f func()) ProcessorOption {
+	return func(p *Processor) { p.onEvent = f }
+}
+
+// NewProcessor returns the processing use case. users resolves the owner of
+// a video for its events.
+func NewProcessor(repo ProcessingRepository, users UserReader, storage ObjectStorage, extractor FrameExtractor, archiver Archiver, opts ...ProcessorOption) *Processor {
 	p := &Processor{
 		repo:      repo,
+		users:     users,
 		storage:   storage,
 		extractor: extractor,
 		archiver:  archiver,
 		log:       slog.New(slog.DiscardHandler),
 		now:       time.Now,
 		newID:     uuid.NewString,
+		onEvent:   func() {},
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -120,7 +135,14 @@ func (p *Processor) GiveUp(ctx context.Context, body []byte, cause error) error 
 	if err != nil {
 		return nil // nothing to record: the message is dead-lettered as is
 	}
-	return p.fail(ctx, msg.VideoID, "", "processing failed after several attempts: "+cause.Error())
+	v, err := p.repo.GetByID(ctx, msg.VideoID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load video %s: %w", msg.VideoID, err)
+	}
+	return p.fail(ctx, v, "processing failed after several attempts: "+cause.Error())
 }
 
 // Process processes the video with the id; see Handle.
@@ -155,12 +177,18 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		var perm *permanentError
 		if ctx.Err() == nil && errors.As(err, &perm) {
 			log.InfoContext(ctx, "video cannot be processed", slog.String("reason", perm.reason))
-			return p.fail(ctx, id, v.OwnerID, perm.reason)
+			return p.fail(ctx, v, perm.reason)
 		}
 		return fmt.Errorf("process video %s: %w", id, err)
 	}
 
-	done, err := p.repo.MarkDone(ctx, id, zipKey, frames, p.timestamp())
+	at := p.timestamp()
+	events, err := p.event(ctx, v, TopicVideoProcessed, at, func(e *VideoEvent) { e.FrameCount = frames })
+	if err != nil {
+		p.removeObject(ctx, zipKey)
+		return err
+	}
+	done, err := p.repo.MarkDone(ctx, id, zipKey, frames, at, events...)
 	if err != nil || !done {
 		// Either the outcome was not recorded (the job is retried and makes
 		// a new zip) or another run finished first: this zip is unused.
@@ -174,32 +202,70 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		return nil
 	}
 	invalidateList(ctx, p.lists, p.log, v.OwnerID)
+	p.eventQueued(events)
 	log.InfoContext(ctx, "video processed", slog.Int("frames", frames), slog.Duration("duration", time.Since(begin)))
 	return nil
 }
 
-// fail records the video as FAILED with reason. ownerID is the video's
-// owner, or "" when the caller does not know it.
-func (p *Processor) fail(ctx context.Context, id, ownerID, reason string) error {
-	failed, err := p.repo.MarkFailed(ctx, id, reason, p.timestamp())
+// fail records the video v as FAILED with reason, with its
+// TopicVideoFailed event.
+func (p *Processor) fail(ctx context.Context, v *domain.Video, reason string) error {
+	at := p.timestamp()
+	events, err := p.event(ctx, v, TopicVideoFailed, at, func(e *VideoEvent) { e.ErrorMessage = reason })
 	if err != nil {
-		return fmt.Errorf("mark video %s failed: %w", id, err)
+		return err
+	}
+	failed, err := p.repo.MarkFailed(ctx, v.ID, reason, at, events...)
+	if err != nil {
+		return fmt.Errorf("mark video %s failed: %w", v.ID, err)
 	}
 	if !failed {
-		p.log.InfoContext(ctx, "video already final; failure not recorded", slog.String("video_id", id))
+		p.log.InfoContext(ctx, "video already final; failure not recorded", slog.String("video_id", v.ID))
 		return nil
 	}
-	if ownerID == "" && p.lists != nil {
-		v, err := p.repo.GetByID(ctx, id)
-		if err != nil {
-			p.log.WarnContext(ctx, "could not find the owner of a failed video to invalidate its list",
-				slog.String("video_id", id), slog.Any("error", err))
-			return nil
-		}
-		ownerID = v.OwnerID
-	}
-	invalidateList(ctx, p.lists, p.log, ownerID)
+	invalidateList(ctx, p.lists, p.log, v.OwnerID)
+	p.eventQueued(events)
 	return nil
+}
+
+// event returns the message of the event of type topic about v, which
+// reaches its final status at, with fill applied. The owner is read now,
+// so the event carries the e-mail registered when it occurred. It returns
+// no message when the owner no longer exists (its videos are gone too).
+func (p *Processor) event(ctx context.Context, v *domain.Video, topic string, at time.Time, fill func(*VideoEvent)) ([]Message, error) {
+	owner, err := p.users.GetByID(ctx, v.OwnerID)
+	if errors.Is(err, ErrNotFound) {
+		p.log.WarnContext(ctx, "owner of the video not found; no event recorded",
+			slog.String("video_id", v.ID), slog.String("owner_id", v.OwnerID))
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load owner of video %s: %w", v.ID, err)
+	}
+	e := VideoEvent{
+		EventID:      p.newID(),
+		Type:         topic,
+		VideoID:      v.ID,
+		OwnerID:      owner.ID,
+		OwnerEmail:   owner.Email,
+		OwnerName:    owner.Name,
+		OriginalName: v.OriginalName,
+		UploadedAt:   v.CreatedAt,
+		OccurredAt:   at,
+	}
+	fill(&e)
+	msg, err := NewVideoEventMessage(e)
+	if err != nil {
+		return nil, err
+	}
+	return []Message{msg}, nil
+}
+
+// eventQueued wakes the outbox relay after events were committed.
+func (p *Processor) eventQueued(events []Message) {
+	if len(events) > 0 {
+		p.onEvent()
+	}
 }
 
 // run downloads the video into a temporary directory, extracts its frames,

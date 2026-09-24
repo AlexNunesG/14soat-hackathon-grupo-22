@@ -125,6 +125,7 @@ func TestHandleSettlesDeliveries(t *testing.T) {
 		{name: "last attempt gives up", attempt: 3, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true},
 		{name: "beyond the last attempt gives up", attempt: 9, handleErr: errBoom, want: "[dead-letter]", wantGiveUp: true},
 		{name: "malformed is dead-lettered at once", handleErr: malformed, want: "[dead-letter]"},
+		{name: "permanent failure is dead-lettered at once", handleErr: fmt.Errorf("%w: 550 no such user", app.ErrPermanent), want: "[dead-letter]"},
 		{name: "shutdown requeues", handleErr: context.Canceled, shutdown: true, want: "[requeue]"},
 		{name: "retry publish failure requeues", handleErr: errBoom, retryErr: errBoom, want: "[requeue]", wantRetries: []int{2}},
 		{name: "give up failure requeues", attempt: 3, handleErr: errBoom, giveUpErr: errBoom, want: "[requeue]", wantGiveUp: true},

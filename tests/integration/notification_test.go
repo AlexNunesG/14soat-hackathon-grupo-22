@@ -22,7 +22,6 @@ const noMailGrace = 5 * time.Second
 // gets exactly one e-mail, about the corrupt one. The name has non-ASCII
 // letters, so the subject must survive MIME encoding.
 func TestFailedVideoNotifiesOwner(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	user, token := registerAndLogin(t)
 	uploaded := mustUpload(t, token,
@@ -46,7 +45,6 @@ func TestFailedVideoNotifiesOwner(t *testing.T) {
 // TestDoneVideosSendNoFailureMail: a user whose videos all end DONE gets no
 // e-mail, checked noMailGrace after the last one is DONE.
 func TestDoneVideosSendNoFailureMail(t *testing.T) {
-	notImplemented(t)
 	t.Parallel()
 	user, token := registerAndLogin(t)
 	uploaded := mustUpload(t, token,

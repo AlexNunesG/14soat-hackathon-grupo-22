@@ -74,3 +74,11 @@ PostgreSQL), and its state is inspectable with SQL
   orphan object in the storage (never a visible video). A storage lifecycle
   rule or a sweeper can remove `uploads/*` objects without a `videos` row if
   that ever matters.
+
+## Later changes
+
+- Phase 2.5 (RF5): the worker uses the same outbox for the `video.failed`
+  and `video.processed` events. It inserts them in the transaction that
+  changes the video's status, and runs its own relay. Every relay (api and
+  worker) declares the whole topology and publishes any row. See
+  [`docs/notifications.md`](../notifications.md).

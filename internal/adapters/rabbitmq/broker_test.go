@@ -250,6 +250,28 @@ func TestBrokerPublishUnroutable(t *testing.T) {
 	}
 }
 
+func TestBrokerPublishAllowedUnrouted(t *testing.T) {
+	url := brokerURL(t)
+	w := testWorkQueue(t, url)
+	pub, err := NewPublisher(url, "test-publisher", w.Exchange, nil, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+	pub.AllowUnrouted("nobody.listens")
+	errs := pub.Publish(context.Background(), []app.Message{
+		{ID: "dropped", Topic: "nobody.listens", Body: []byte("{}")},
+		{ID: "routed", Topic: w.RoutingKey, Body: []byte("{}")},
+		{ID: "lost", Topic: "no.queue.bound", Body: []byte("{}")},
+	})
+	if errs[0] != nil || errs[1] != nil || !errors.Is(errs[2], ErrUnroutable) {
+		t.Fatalf("errs %v, want [nil, nil, ErrUnroutable]", errs)
+	}
+	if n := messageCount(t, url, w.Queue); n != 1 {
+		t.Errorf("%d messages queued, want 1", n)
+	}
+}
+
 func TestBrokerGracefulShutdownFinishesInFlight(t *testing.T) {
 	url := brokerURL(t)
 	w := testWorkQueue(t, url)

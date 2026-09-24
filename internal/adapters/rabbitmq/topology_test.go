@@ -24,7 +24,7 @@ var definitionsFile = filepath.Join("..", "..", "..", "deploy", "rabbitmq", "def
 //
 //	go test ./internal/adapters/rabbitmq/ -run TestDefinitionsFile -update
 func TestDefinitionsFileMatchesTopology(t *testing.T) {
-	want, err := json.MarshalIndent(NewDefinitions(VideoProcess), "", "  ")
+	want, err := json.MarshalIndent(NewDefinitions(Topology...), "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +87,37 @@ func TestVideoProcessTopology(t *testing.T) {
 	}
 	if !reflect.DeepEqual(d.Bindings, wantBindings) {
 		t.Errorf("bindings %+v", d.Bindings)
+	}
+}
+
+func TestVideoNotifyTopology(t *testing.T) {
+	w := VideoNotify
+	if w.Exchange != "videos" || w.RoutingKey != "video.failed" || w.DeadLetterExchange != "videos.dlx" {
+		t.Errorf("notify queue %+v", w)
+	}
+	if w.MaxAttempts() != 5 || w.DeadLetterQueue() != "video.notify.dlq" || w.RetryQueue(4) != "video.notify.retry.4" {
+		t.Errorf("max attempts %d, DLQ %q", w.MaxAttempts(), w.DeadLetterQueue())
+	}
+	d := NewDefinitions(Topology...)
+	var names []string
+	for _, q := range d.Queues {
+		names = append(names, q.Name)
+	}
+	want := []string{
+		"video.process", "video.process.dlq", "video.process.retry.1", "video.process.retry.2", "video.process.retry.3",
+		"video.notify", "video.notify.dlq", "video.notify.retry.1", "video.notify.retry.2", "video.notify.retry.3", "video.notify.retry.4",
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("queues %v, want %v", names, want)
+	}
+	// video.processed has no queue: it must be published non-mandatory.
+	for _, b := range d.Bindings {
+		if slices.Contains(UnroutedTopics, b.RoutingKey) {
+			t.Errorf("unrouted topic %s is bound to %s", b.RoutingKey, b.Destination)
+		}
+	}
+	if !slices.Contains(UnroutedTopics, "video.processed") {
+		t.Errorf("unrouted topics %v", UnroutedTopics)
 	}
 }
 

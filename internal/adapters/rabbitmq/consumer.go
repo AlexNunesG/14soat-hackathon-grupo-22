@@ -33,9 +33,10 @@ const (
 type Handler interface {
 	// Handle processes one message body. It returns nil when the message
 	// is done with, an error wrapping app.ErrMalformedMessage when the body
-	// can never be processed, and any other error for a failure worth
-	// retrying. ctx is canceled when the consumer stops before the handler
-	// is done; the message is then requeued.
+	// can never be processed, one wrapping app.ErrPermanent when retrying
+	// cannot help, and any other error for a failure worth retrying. ctx
+	// is canceled when the consumer stops before the handler is done; the
+	// message is then requeued.
 	Handle(ctx context.Context, body []byte) error
 	// GiveUp is called with the last error when a message failed on its
 	// last attempt, before it is dead-lettered.
@@ -76,7 +77,8 @@ type ConsumerConfig struct {
 //     ack;
 //   - failure on the last attempt: Handler.GiveUp, then nack without
 //     requeue, which dead-letters the message to the DLQ;
-//   - malformed message: nack without requeue (DLQ) at once;
+//   - malformed message, or a failure wrapping app.ErrPermanent: nack
+//     without requeue (DLQ) at once;
 //   - interrupted by shutdown: nack with requeue.
 //
 // A message is only acked after its outcome is recorded, so a crash at any
@@ -279,6 +281,10 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 
 	case errors.Is(err, app.ErrMalformedMessage):
 		log.Error("malformed message dead-lettered", slog.Any("error", err))
+		c.settle(log, "dead-letter", d.Nack(false, false))
+
+	case errors.Is(err, app.ErrPermanent):
+		log.Error("message failed permanently; dead-lettered without retry", slog.Any("error", err))
 		c.settle(log, "dead-letter", d.Nack(false, false))
 
 	case attempt < c.cfg.MaxAttempts:

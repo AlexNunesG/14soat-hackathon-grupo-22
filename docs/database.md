@@ -34,7 +34,7 @@ deliverable **D2**.
 Add `db/migrations/0000N_what_it_does.sql` with the next number, never edit
 a migration that was merged, and make the `Down` section undo the `Up`.
 
-## Schema (version 2)
+## Schema (version 3)
 
 ```sql
 CREATE TABLE users (
@@ -82,9 +82,30 @@ CREATE TABLE outbox (
 CREATE INDEX outbox_available_idx ON outbox (available_at, id);
 ```
 
+Since Phase 2.5 the worker writes to the outbox too: the change of a video
+to `DONE` or `FAILED` and its `video.processed` / `video.failed` event (see
+[`messaging.md`](messaging.md#video-events)) are one transaction, and the
+worker runs its own relay. Every relay can publish every row.
+
+Version 3 adds the log of the failure e-mails already sent, which the
+notifier uses to send exactly one e-mail per event
+([`notifications.md`](notifications.md)):
+
+```sql
+CREATE TABLE notifications_sent (
+    event_id  uuid        PRIMARY KEY,           -- video.failed event id
+    video_id  uuid        NOT NULL,              -- no FK: history outlives videos
+    kind      text        NOT NULL,              -- event type, e.g. video.failed
+    recipient text        NOT NULL,              -- address the e-mail went to
+    sent_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX notifications_sent_video_idx ON notifications_sent (video_id);
+```
+
 The exact DDL, with all constraints, is in
-[`00001_create_users_and_videos.sql`](../db/migrations/00001_create_users_and_videos.sql)
-and [`00002_create_outbox.sql`](../db/migrations/00002_create_outbox.sql).
+[`00001_create_users_and_videos.sql`](../db/migrations/00001_create_users_and_videos.sql),
+[`00002_create_outbox.sql`](../db/migrations/00002_create_outbox.sql) and
+[`00003_create_notifications_sent.sql`](../db/migrations/00003_create_notifications_sent.sql).
 Notes:
 
 - **E-mails** are unique case-insensitively because the api stores them
@@ -105,12 +126,20 @@ Notes:
   (`UPDATE videos ... WHERE id = $1 AND status IN (...)`): `PENDING` or
   `PROCESSING` → `PROCESSING` (a redelivered job restarts), `PROCESSING` →
   `DONE`, `PENDING` or `PROCESSING` → `FAILED`. A final video never changes,
-  whatever the order or number of deliveries of its job.
+  whatever the order or number of deliveries of its job. The changes to
+  `DONE` and `FAILED` insert their event into `outbox` in the same
+  transaction, only when the `UPDATE` changed the row.
 - **Outbox relay**: `SELECT ... WHERE available_at <= now() ORDER BY id
   LIMIT n FOR UPDATE SKIP LOCKED`, publish with confirms, then `DELETE` the
   confirmed rows and push the others' `available_at` back (1 s, 2 s, 4 s …
-  up to 15 s), all in one transaction. Pending jobs:
-  `SELECT count(*), max(attempts), min(created_at) FROM outbox;`
+  up to 15 s), all in one transaction. Pending messages:
+  `SELECT topic, count(*), max(attempts), min(created_at) FROM outbox GROUP BY topic;`
+- **Notification dedup**: the notifier inserts the event id
+  (`INSERT ... ON CONFLICT (event_id) DO NOTHING`), sends the e-mail and
+  commits, in one transaction; no row inserted means already sent. A
+  concurrent duplicate waits on the primary key until the first transaction
+  ends. E-mails sent for a video:
+  `SELECT * FROM notifications_sent WHERE video_id = '<id>';`
 
 ## Repository tests
 

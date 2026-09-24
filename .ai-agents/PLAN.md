@@ -215,20 +215,20 @@ Helpers are added together with the first test that uses them (the `unused`
 linter rejects dead helpers): `registerAndLogin(t)` (unique user per test),
 authenticated client, `uploadVideos(t, token, files...)`, `makeVideo`,
 `waitForStatus(t, token, id, want, timeout)` (polling), `mailsFor(t, email)`,
-error-envelope decoding. Split in two PRs: **1.3a** auth, upload, processing,
+error-envelope decoding (done in 1.3a: `api_test.go`, `helpers_test.go`). Split in two PRs: **1.3a** auth, upload, processing,
 status, download; **1.3b** concurrency, resilience, notification, e2e.
 
-- [ ] `auth_test.go` — register, duplicate, invalid input, login ok/wrong
+- [x] `auth_test.go` — register, duplicate, invalid input, login ok/wrong
       password, protected routes return 401 without/with invalid/expired token.
-- [ ] `upload_test.go` — 202 + PENDING job, several files in one request,
+- [x] `upload_test.go` — 202 + PENDING job, several files in one request,
       missing field, every unsupported extension, every supported format
       accepted (any case).
-- [ ] `processing_test.go` — job reaches DONE; frame count follows video
+- [x] `processing_test.go` — job reaches DONE; frame count follows video
       duration (1 fps); zip holds `frame_0001.png…` valid PNGs; corrupt video,
       audio-only file and zero-frame video reach FAILED with `error_message`.
-- [ ] `status_test.go` — list shows only the caller's videos, newest first,
+- [x] `status_test.go` — list shows only the caller's videos, newest first,
       pagination; get-by-id; 404 for another user's id.
-- [ ] `download_test.go` — valid zip when DONE, 409 while PENDING/PROCESSING,
+- [x] `download_test.go` — valid zip when DONE, 409 while PENDING/PROCESSING,
       404 for another user / unknown id.
 - [ ] `concurrency_test.go` — **RF1**: N videos uploaded together are
       processed in parallel (e.g. total time < sum of individual times, or

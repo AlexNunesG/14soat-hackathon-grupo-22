@@ -103,19 +103,23 @@ func (r *OutboxRelay) drain(ctx context.Context) {
 // failed messages for a later pass.
 func (r *OutboxRelay) publish(ctx context.Context, msgs []Message) []error {
 	errs := r.publisher.Publish(ctx, msgs)
-	failed := 0
-	var first error
-	for _, err := range errs {
+	failed, first := 0, -1
+	for i, err := range errs {
 		if err != nil {
 			failed++
-			if first == nil {
-				first = err
+			if first < 0 {
+				first = i
 			}
 		}
 	}
 	if failed > 0 {
-		r.log.WarnContext(ctx, "outbox messages not published; will retry",
-			slog.Int("failed", failed), slog.Int("batch", len(msgs)), slog.Any("error", first))
+		attrs := []slog.Attr{slog.Int("failed", failed), slog.Int("batch", len(msgs)), slog.Any("error", errs[first])}
+		if first < len(msgs) {
+			// The first failed message identifies the batch in the logs.
+			attrs = append(attrs, slog.String("message_id", msgs[first].ID),
+				slog.String("request_id", msgs[first].CorrelationID))
+		}
+		r.log.LogAttrs(ctx, slog.LevelWarn, "outbox messages not published; will retry", attrs...)
 	} else {
 		r.log.DebugContext(ctx, "outbox messages published", slog.Int("count", len(msgs)))
 	}

@@ -26,6 +26,11 @@ info:
       reported as `404 not_found`, never `403`, so its existence is not
       leaked.
     - CORS is not part of this contract (the web UI is served same-origin).
+    - Every response has an `X-Request-ID` header: the request's correlation
+      id, taken from the request's own `X-Request-ID` when it is 1 to 128
+      characters among letters, digits and `-_.:`, and generated (a UUID)
+      otherwise. It is in every log line about the request and the jobs it
+      caused (`docs/observability.md`); quote it when reporting a problem.
 
     ## Errors
 

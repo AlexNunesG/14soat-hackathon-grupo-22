@@ -102,10 +102,20 @@ CREATE TABLE notifications_sent (
 CREATE INDEX notifications_sent_video_idx ON notifications_sent (video_id);
 ```
 
+Version 4 adds the correlation id of outbox messages
+([`observability.md`](observability.md)): the request id of the upload that
+caused the message, published as its AMQP `correlation-id`. It is nullable,
+so rows queued before the migration are published without one.
+
+```sql
+ALTER TABLE outbox ADD COLUMN correlation_id text CHECK (correlation_id <> '');
+```
+
 The exact DDL, with all constraints, is in
 [`00001_create_users_and_videos.sql`](../db/migrations/00001_create_users_and_videos.sql),
-[`00002_create_outbox.sql`](../db/migrations/00002_create_outbox.sql) and
-[`00003_create_notifications_sent.sql`](../db/migrations/00003_create_notifications_sent.sql).
+[`00002_create_outbox.sql`](../db/migrations/00002_create_outbox.sql),
+[`00003_create_notifications_sent.sql`](../db/migrations/00003_create_notifications_sent.sql) and
+[`00004_add_outbox_correlation_id.sql`](../db/migrations/00004_add_outbox_correlation_id.sql).
 Notes:
 
 - **E-mails** are unique case-insensitively because the api stores them

@@ -203,7 +203,8 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 	}
 	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 	p.eventQueued(events)
-	log.InfoContext(ctx, "video processed", slog.Int("frames", frames), slog.Duration("duration", time.Since(begin)))
+	log.InfoContext(ctx, "video processed", slog.Int("frames", frames),
+		slog.Float64("duration_ms", float64(time.Since(begin).Microseconds())/1000))
 	return nil
 }
 

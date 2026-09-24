@@ -25,8 +25,10 @@ func ParseLevel(s string) (slog.Level, error) {
 }
 
 // New returns a JSON logger writing to w at the given level, with a
-// "service" attribute on every record.
+// "service" attribute on every record and the correlation fields of the
+// record's context (ContextHandler) on records logged with a *Context
+// method.
 func New(w io.Writer, service string, level slog.Level) *slog.Logger {
 	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
-	return slog.New(h).With(slog.String("service", service))
+	return slog.New(NewContextHandler(h)).With(slog.String("service", service))
 }

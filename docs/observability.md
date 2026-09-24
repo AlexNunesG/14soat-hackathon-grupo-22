@@ -108,3 +108,127 @@ Without a client-provided id, take the one the api returned
 - A client-provided `X-Request-ID` is logged only when it passes
   `logging.ValidRequestID`, so it cannot inject quotes, newlines or huge
   values into the logs or the message properties.
+
+## Metrics
+
+Every service exposes Prometheus metrics at `GET /metrics` (text format;
+OpenMetrics when the scraper asks for it). Each service has its own
+registry (`internal/platform/metrics`), never the global default one.
+
+### Where they are served
+
+| service | listener | notes |
+|---|---|---|
+| api | `METRICS_ADDR` (default `:9090`), `GET /metrics` only | A separate internal listener: the public port (`HTTP_ADDR`, 8080) answers `/metrics` with 404, so publishing the API never publishes the metrics. |
+| worker | `HEALTH_ADDR` (default `:8081`), next to `/healthz` and `/readyz` | Already an internal listener (probes only). |
+| notifier | `HEALTH_ADDR` (default `:8081`), next to `/healthz` and `/readyz` | Same as the worker. |
+| rabbitmq | `:15692` (`rabbitmq_prometheus` plugin) | Queue depth; see below. |
+
+`/metrics` has no authentication and is not in the access log (it is
+served beside the Gin router, not through it). In compose the services'
+metrics ports are **not published**: Prometheus scrapes them over the
+compose network, and worker replicas have no fixed host port. RabbitMQ's
+15692 is published on `127.0.0.1` only. By hand:
+
+```sh
+C="docker compose -f deploy/docker-compose.yml"
+$C exec api wget -qO- http://127.0.0.1:9090/metrics | grep ^videoproc_
+$C exec --index 2 worker wget -qO- http://127.0.0.1:8081/metrics | grep ^videoproc_jobs
+$C exec notifier wget -qO- http://127.0.0.1:8081/metrics | grep ^videoproc_notifications
+curl -s 'http://127.0.0.1:15692/metrics/detailed?family=queue_coarse_metrics' | grep 'queue="video.process"'
+```
+
+### Application metrics
+
+Every name has the `videoproc_` prefix. Labels are **bounded**: fixed sets
+of outcomes and results, HTTP route *patterns* (`/api/v1/videos/:id`, never
+the raw path), never user ids, video ids, e-mail addresses or free text.
+Unit tests check the label sets (`TestLabelsAreBounded`,
+`TestMetricsCountRequestsByRoutePattern`). Series with a fixed label set
+are exported at 0 from the start, so `rate()` and dashboards work before
+the first event.
+
+| metric | type | labels | service | meaning |
+|---|---|---|---|---|
+| `videoproc_build_info` | gauge (1) | `service`, `version` | all | Build of the service. `version` comes from the images' `VERSION` build arg (default `dev`). |
+| `go_*`, `process_*` | | | all | Go runtime (goroutines, GC, memory) and process (CPU, RSS, open fds, start time) collectors. |
+| `videoproc_http_requests_total` | counter | `method`, `route`, `status` | api | Requests served. `route` is the route pattern, `unmatched` for unknown paths; `method` is `OTHER` for non-standard methods. |
+| `videoproc_http_request_duration_seconds` | histogram | `method`, `route` | api | Time to serve a request (5 ms to 5 min buckets: uploads and downloads can be long). |
+| `videoproc_http_requests_in_flight` | gauge | | api | Requests being served. |
+| `videoproc_uploads_total` | counter | `result` | api | `POST /api/v1/videos` requests that reached the handler (authenticated): `accepted`, or the error code of the rejection (`unsupported_format`, `missing_file`, `payload_too_large`, `invalid_request`, `internal`). |
+| `videoproc_upload_bytes` | histogram | | api | Size of every accepted video file (64 KiB to 4 GiB buckets): `_count` = videos accepted, `_sum` = bytes. |
+| `videoproc_list_cache_requests_total` | counter | `result` = `hit`, `miss`, `error` | api | Lookups of the video list cache ([`cache.md`](cache.md)), one per `GET /api/v1/videos`; `error`: Redis failed and Postgres answered. Absent when the cache is disabled. |
+| `videoproc_outbox_pending` | gauge | | api, worker | Rows waiting in the outbox (ADR 0004), due or delayed after a failed publish; read at scrape time. The table is shared, so every relay reports the same value: aggregate with `max`. Left out of a scrape when Postgres is unreachable. |
+| `videoproc_outbox_published_total` | counter | `result` = `ok`, `error` | api, worker | Messages this relay published (broker confirmed) or failed to publish (kept for a later pass). |
+| `videoproc_jobs_total` | counter | `outcome` | worker | `video.process` deliveries handled, one outcome each (below). |
+| `videoproc_job_duration_seconds` | histogram | `outcome` | worker | Time to handle one job: download, ffmpeg, zip, upload and status change (100 ms to 20 min buckets). |
+| `videoproc_jobs_in_progress` | gauge | | worker | Jobs being handled by this worker (at most `WORKER_CONCURRENCY`). |
+| `videoproc_frames_extracted_total` | counter | | worker | Frames of the videos that ended DONE. |
+| `videoproc_notifications_total` | counter | `result` | notifier | `video.notify` deliveries handled, one result each (below). |
+| `videoproc_notifications_in_progress` | gauge | | notifier | Events being handled by this notifier. |
+| `videoproc_smtp_send_duration_seconds` | histogram | `result` = `ok`, `error` | notifier | Time of one SMTP send (10 ms to 30 s buckets). |
+
+**Job outcomes** (`videoproc_jobs_total{outcome}`): the processor reports
+the outcomes of the jobs it finishes, the consumer
+(`rabbitmq.Consumer`) those of the jobs that fail
+([`messaging.md`](messaging.md)):
+
+| outcome | meaning |
+|---|---|
+| `done` | The video ended DONE. |
+| `failed` | The video ended FAILED because of its content (undecodable, no frames, ffmpeg timeout, upload missing); no retry. |
+| `ignored` | Nothing to do: unknown or already final video, or another delivery of the same job finished first. |
+| `retried` | A transient failure; the job was sent to a retry queue. |
+| `dead_lettered` | Sent to `video.process.dlq`: the last attempt failed (the video ends FAILED) or the message is malformed. |
+| `requeued` | Put back in the queue: shutdown mid-job, or the outcome could not be recorded. |
+
+Videos that ended FAILED = `failed` + the `dead_lettered` given up after
+retries. **Notification results** (`videoproc_notifications_total{result}`):
+`sent` (e-mail sent, including sent-but-not-recorded), `duplicate` (the
+event was already notified), `ignored` (an event that is not notified),
+and `retried`, `dead_lettered` (to `video.notify.dlq`) and `requeued` as
+for jobs.
+
+Where they are recorded (ADR 0002: `internal/app` does not import
+Prometheus): the use cases report to small ports (`app.ProcessorMetrics`,
+`app.OutcomeRecorder`, `internal/app/metrics.go`), the consumer to
+`rabbitmq.Metrics`; `internal/adapters/prom` implements them and wraps the
+outbox publisher, the mailer and the list cache; the HTTP middleware and
+upload counters are in `internal/adapters/http/metrics.go`.
+
+### Queue depth (RabbitMQ)
+
+Queue depth comes from RabbitMQ's built-in Prometheus plugin
+(`rabbitmq_prometheus`), enabled with the management plugin by
+`deploy/rabbitmq/enabled_plugins` (mounted at
+`/etc/rabbitmq/enabled_plugins`; the `rabbitmq:4-management` image enables
+the same two by default). It listens on 15692, with no separate exporter:
+
+| endpoint | content |
+|---|---|
+| `/metrics` | Node-wide totals only (`rabbitmq_queue_messages_ready` summed over all queues), cheap. |
+| `/metrics/detailed?vhost=/&family=queue_coarse_metrics&family=queue_consumer_count` | **Per queue**: `rabbitmq_detailed_queue_messages_ready`, `rabbitmq_detailed_queue_messages_unacked`, `rabbitmq_detailed_queue_messages` and `rabbitmq_detailed_queue_consumers`, labeled `{vhost, queue}`, for `video.process`, `video.notify`, their `.retry.N` queues and the DLQs `video.process.dlq`, `video.notify.dlq`. This is the endpoint Prometheus scrapes for queue depth. |
+| `/metrics/per-object` | Every metric per object (`rabbitmq_queue_messages_ready{queue=...}`, ...): same data, heavier. |
+
+```
+rabbitmq_detailed_queue_messages_ready{vhost="/",queue="video.process"} 2
+rabbitmq_detailed_queue_messages_unacked{vhost="/",queue="video.process"} 0
+rabbitmq_detailed_queue_consumers{vhost="/",queue="video.process"} 2
+rabbitmq_detailed_queue_messages_ready{vhost="/",queue="video.process.dlq"} 0
+```
+
+### Scraping (next step: Prometheus in compose)
+
+| job | target | path |
+|---|---|---|
+| `api` | `api:9090` | `/metrics` |
+| `worker` | every replica: `dns_sd_configs` with `names: [worker]`, `type: A`, `port: 8081` (Docker's DNS returns one A record per replica of the `worker` service) | `/metrics` |
+| `notifier` | `notifier:8081` | `/metrics` |
+| `rabbitmq` | `rabbitmq:15692` | `/metrics` |
+| `rabbitmq-queues` | `rabbitmq:15692` | `/metrics/detailed`, `params: {vhost: ["/"], family: [queue_coarse_metrics, queue_consumer_count]}` |
+
+Useful queries: `sum by (outcome) (rate(videoproc_jobs_total[5m]))`,
+`histogram_quantile(0.95, sum by (le) (rate(videoproc_job_duration_seconds_bucket[5m])))`,
+`sum by (route) (rate(videoproc_http_requests_total{status=~"5.."}[5m]))`,
+`rabbitmq_detailed_queue_messages_ready{queue="video.process"}`,
+`max(videoproc_outbox_pending)`.

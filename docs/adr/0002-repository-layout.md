@@ -37,9 +37,11 @@ internal/
     mailer/       SMTP
     redis/        video-list cache (added in Phase 2.4)
     auth/         bcrypt + JWT (added in Phase 2.2)
+    prom/         Prometheus collectors of the use cases' metrics ports (Phase 3)
   platform/
     config/       env configuration
     logging/      slog setup, correlation ids
+    metrics/      Prometheus registry, build info, GET /metrics (Phase 3)
 db/migrations/    versioned SQL (D2)
 deploy/           compose files, k8s manifests, RabbitMQ definitions, storage bootstrap
 docs/             architecture, ADRs, openapi.yaml

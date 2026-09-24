@@ -2,6 +2,9 @@
 // configuration, logging, the dependencies' adapters and the HTTP server.
 // It holds no business logic (ADR 0002).
 //
+// The API is served on HTTP_ADDR; GET /metrics (Prometheus) on the
+// internal listener METRICS_ADDR, which is not meant to be published.
+//
 // Usage:
 //
 //	api            serve the HTTP API
@@ -10,6 +13,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,12 +26,14 @@ import (
 	"video-processor/internal/adapters/auth"
 	httpapi "video-processor/internal/adapters/http"
 	"video-processor/internal/adapters/postgres"
+	"video-processor/internal/adapters/prom"
 	"video-processor/internal/adapters/rabbitmq"
 	rediscache "video-processor/internal/adapters/redis"
 	"video-processor/internal/adapters/storage"
 	"video-processor/internal/app"
 	"video-processor/internal/platform/config"
 	"video-processor/internal/platform/logging"
+	"video-processor/internal/platform/metrics"
 )
 
 func main() {
@@ -92,6 +98,9 @@ func run() error {
 	}
 	defer db.Close()
 
+	// Prometheus metrics (docs/observability.md), served on METRICS_ADDR.
+	reg := metrics.NewRegistry("api")
+
 	broker, err := rabbitmq.NewProbe(cfg.Broker.URL)
 	if err != nil {
 		return err
@@ -132,7 +141,9 @@ func run() error {
 		return err
 	}
 	defer publisher.Close()
-	relay := app.NewOutboxRelay(postgres.NewOutbox(db), publisher, log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
+	outbox := postgres.NewOutbox(db)
+	outboxMetrics := prom.NewOutbox(reg, outbox.Pending)
+	relay := app.NewOutboxRelay(outbox, outboxMetrics.Publisher(publisher), log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
 	videos := postgres.NewVideos(db)
 
 	// The video list cache (docs/cache.md) is optional and best effort:
@@ -145,7 +156,7 @@ func run() error {
 			return err
 		}
 		defer cache.Close()
-		videoOpts = append(videoOpts, app.WithListCache(cache, log))
+		videoOpts = append(videoOpts, app.WithListCache(prom.InstrumentListCache(reg, cache), log))
 		uploadOpts = append(uploadOpts, app.WithUploadListInvalidator(cache))
 		log.Info("video list cache enabled", slog.Duration("ttl", cfg.Cache.TTL))
 	} else {
@@ -167,6 +178,7 @@ func run() error {
 		MaxUploadBytes: cfg.Upload.MaxBytes,
 		UploadTempDir:  cfg.Upload.TempDir,
 		WebUI:          true,
+		Metrics:        httpapi.NewMetrics(reg),
 	})
 
 	// The relay outlives the HTTP server, so the jobs of the last uploads
@@ -183,12 +195,30 @@ func run() error {
 	}()
 
 	var lc net.ListenConfig
+	metricsLn, err := lc.Listen(ctx, "tcp", cfg.HTTP.MetricsAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.HTTP.MetricsAddr, err)
+	}
+	metricsErr := make(chan error, 1)
+	go func() {
+		err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HTTP.MetricsAddr, metrics.Mux(reg, nil)), metricsLn, cfg.HTTP.ShutdownTimeout)
+		if err != nil {
+			stop() // an api without metrics would be blind: shut down
+		}
+		metricsErr <- err
+	}()
+
 	ln, err := lc.Listen(ctx, "tcp", cfg.HTTP.Addr)
 	if err != nil {
+		stop()
+		<-metricsErr
 		return fmt.Errorf("listen on %s: %w", cfg.HTTP.Addr, err)
 	}
-	log.Info("api listening", slog.String("addr", ln.Addr().String()))
-	if err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HTTP.Addr, handler), ln, cfg.HTTP.ShutdownTimeout); err != nil {
+	log.Info("api listening", slog.String("addr", ln.Addr().String()),
+		slog.String("metrics_addr", metricsLn.Addr().String()))
+	serveErr := httpapi.Serve(ctx, httpapi.NewServer(cfg.HTTP.Addr, handler), ln, cfg.HTTP.ShutdownTimeout)
+	stop() // also stops the metrics server if the api server failed
+	if err := errors.Join(serveErr, <-metricsErr); err != nil {
 		return err
 	}
 	log.Info("api stopped")

@@ -11,6 +11,13 @@
 # file is needed; .env.example documents the variables. Infrastructure ports
 # are published on 127.0.0.1 only, for running a service or a test from the
 # host.
+#
+# Metrics (docs/observability.md, "Metrics"): GET /metrics is served on
+# api:9090 (METRICS_ADDR), worker:8081 and notifier:8081 (HEALTH_ADDR), and
+# RabbitMQ's on rabbitmq:15692. The services' metrics ports are not
+# published: Prometheus scrapes them over the compose network (and worker
+# replicas have no fixed host port). Read one by hand with e.g.
+#   docker compose -f deploy/docker-compose.yml exec api wget -qO- http://127.0.0.1:9090/metrics
 
 name: video-processor
 
@@ -50,6 +57,11 @@ services:
   # The topology (exchanges, queues, retry and dead-letter queues) is
   # declared by the api, the worker and the notifier on connect; the same topology is in
   # deploy/rabbitmq/definitions.json for manual import.
+  #
+  # Plugins (deploy/rabbitmq/enabled_plugins): the management UI and the
+  # built-in Prometheus endpoint on 15692 (/metrics aggregated,
+  # /metrics/detailed?family=queue_coarse_metrics per queue: the queue
+  # depth of video.process, video.notify and the DLQs).
   rabbitmq:
     image: rabbitmq:4-management-alpine
     # A fixed hostname keeps the node name (rabbit@rabbitmq), so durable
@@ -61,8 +73,10 @@ services:
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # management UI
+      - "127.0.0.1:${RABBITMQ_METRICS_PORT:-15692}:15692" # Prometheus metrics
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 10s
@@ -127,6 +141,7 @@ services:
       dockerfile: deploy/docker/api.Dockerfile
       args:
         GOPROXY: ${GOPROXY:-}
+        VERSION: ${VERSION:-dev}
     image: video-processor/api:dev
     command: ["migrate"]
     environment:
@@ -143,9 +158,12 @@ services:
       dockerfile: deploy/docker/api.Dockerfile
       args:
         GOPROXY: ${GOPROXY:-}
+        VERSION: ${VERSION:-dev}
     image: video-processor/api:dev
     environment:
       HTTP_ADDR: ":8080"
+      # GET /metrics, internal only: not published (see the top of the file).
+      METRICS_ADDR: ":9090"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-15s}
       READINESS_TIMEOUT: ${READINESS_TIMEOUT:-2s}
@@ -203,6 +221,7 @@ services:
       dockerfile: deploy/docker/worker.Dockerfile
       args:
         GOPROXY: ${GOPROXY:-}
+        VERSION: ${VERSION:-dev}
     image: video-processor/worker:dev
     environment:
       HEALTH_ADDR: ":8081"
@@ -257,6 +276,7 @@ services:
       dockerfile: deploy/docker/notifier.Dockerfile
       args:
         GOPROXY: ${GOPROXY:-}
+        VERSION: ${VERSION:-dev}
     image: video-processor/notifier:dev
     environment:
       HEALTH_ADDR: ":8081"

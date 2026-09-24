@@ -41,6 +41,7 @@ type Processor struct {
 	newID     func() string
 	lists     ListInvalidator
 	onEvent   func()
+	metrics   ProcessorMetrics
 }
 
 // ProcessorOption customizes Processor.
@@ -79,6 +80,13 @@ func OnEvent(f func()) ProcessorOption {
 	return func(p *Processor) { p.onEvent = f }
 }
 
+// WithProcessorMetrics sets the metrics port: the outcome of every job
+// that returns nil (done, failed, ignored) with its duration, and the
+// frames of the videos that end DONE.
+func WithProcessorMetrics(m ProcessorMetrics) ProcessorOption {
+	return func(p *Processor) { p.metrics = m }
+}
+
 // NewProcessor returns the processing use case. users resolves the owner of
 // a video for its events.
 func NewProcessor(repo ProcessingRepository, users UserReader, storage ObjectStorage, extractor FrameExtractor, archiver Archiver, opts ...ProcessorOption) *Processor {
@@ -92,6 +100,7 @@ func NewProcessor(repo ProcessingRepository, users UserReader, storage ObjectSto
 		now:       time.Now,
 		newID:     uuid.NewString,
 		onEvent:   func() {},
+		metrics:   noMetrics{},
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -142,31 +151,44 @@ func (p *Processor) GiveUp(ctx context.Context, body []byte, cause error) error 
 	if err != nil {
 		return fmt.Errorf("load video %s: %w", msg.VideoID, err)
 	}
-	return p.fail(ctx, v, "processing failed after several attempts: "+cause.Error())
+	_, err = p.fail(ctx, v, "processing failed after several attempts: "+cause.Error())
+	return err
 }
 
-// Process processes the video with the id; see Handle.
+// Process processes the video with the id; see Handle. When it returns
+// nil, it reports the job's outcome to the metrics port (an error is
+// reported by the consumer, which decides what happens to the message).
 func (p *Processor) Process(ctx context.Context, id string) error {
+	begin := time.Now()
+	outcome, err := p.process(ctx, id)
+	if err == nil {
+		p.metrics.RecordOutcome(outcome, time.Since(begin))
+	}
+	return err
+}
+
+// process is Process; it returns the job's outcome when err is nil.
+func (p *Processor) process(ctx context.Context, id string) (Outcome, error) {
 	log := p.log.With(slog.String("video_id", id))
 	v, err := p.repo.GetByID(ctx, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		log.WarnContext(ctx, "job for an unknown video ignored")
-		return nil
+		return OutcomeIgnored, nil
 	case err != nil:
-		return fmt.Errorf("load video %s: %w", id, err)
+		return "", fmt.Errorf("load video %s: %w", id, err)
 	case v.Status.IsFinal():
 		log.InfoContext(ctx, "job for a finished video ignored", slog.String("status", v.Status.String()))
-		return nil
+		return OutcomeIgnored, nil
 	}
 
 	started, err := p.repo.MarkProcessing(ctx, id, p.timestamp())
 	if err != nil {
-		return fmt.Errorf("mark video %s processing: %w", id, err)
+		return "", fmt.Errorf("mark video %s processing: %w", id, err)
 	}
 	if !started {
 		log.InfoContext(ctx, "job for a video finished meanwhile ignored")
-		return nil
+		return OutcomeIgnored, nil
 	}
 	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 
@@ -177,16 +199,20 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		var perm *permanentError
 		if ctx.Err() == nil && errors.As(err, &perm) {
 			log.InfoContext(ctx, "video cannot be processed", slog.String("reason", perm.reason))
-			return p.fail(ctx, v, perm.reason)
+			failed, err := p.fail(ctx, v, perm.reason)
+			if err != nil || !failed {
+				return OutcomeIgnored, err
+			}
+			return OutcomeFailed, nil
 		}
-		return fmt.Errorf("process video %s: %w", id, err)
+		return "", fmt.Errorf("process video %s: %w", id, err)
 	}
 
 	at := p.timestamp()
 	events, err := p.event(ctx, v, TopicVideoProcessed, at, func(e *VideoEvent) { e.FrameCount = frames })
 	if err != nil {
 		p.removeObject(ctx, zipKey)
-		return err
+		return "", err
 	}
 	done, err := p.repo.MarkDone(ctx, id, zipKey, frames, at, events...)
 	if err != nil || !done {
@@ -195,38 +221,40 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		p.removeObject(ctx, zipKey)
 	}
 	if err != nil {
-		return fmt.Errorf("mark video %s done: %w", id, err)
+		return "", fmt.Errorf("mark video %s done: %w", id, err)
 	}
 	if !done {
 		log.InfoContext(ctx, "video was finished by another run; result discarded")
-		return nil
+		return OutcomeIgnored, nil
 	}
 	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 	p.eventQueued(events)
+	p.metrics.FramesExtracted(frames)
 	log.InfoContext(ctx, "video processed", slog.Int("frames", frames),
 		slog.Float64("duration_ms", float64(time.Since(begin).Microseconds())/1000))
-	return nil
+	return OutcomeDone, nil
 }
 
 // fail records the video v as FAILED with reason, with its
-// TopicVideoFailed event.
-func (p *Processor) fail(ctx context.Context, v *domain.Video, reason string) error {
+// TopicVideoFailed event, and reports whether it did (false: the video
+// was already final).
+func (p *Processor) fail(ctx context.Context, v *domain.Video, reason string) (bool, error) {
 	at := p.timestamp()
 	events, err := p.event(ctx, v, TopicVideoFailed, at, func(e *VideoEvent) { e.ErrorMessage = reason })
 	if err != nil {
-		return err
+		return false, err
 	}
 	failed, err := p.repo.MarkFailed(ctx, v.ID, reason, at, events...)
 	if err != nil {
-		return fmt.Errorf("mark video %s failed: %w", v.ID, err)
+		return false, fmt.Errorf("mark video %s failed: %w", v.ID, err)
 	}
 	if !failed {
 		p.log.InfoContext(ctx, "video already final; failure not recorded", slog.String("video_id", v.ID))
-		return nil
+		return false, nil
 	}
 	invalidateList(ctx, p.lists, p.log, v.OwnerID)
 	p.eventQueued(events)
-	return nil
+	return true, nil
 }
 
 // event returns the message of the event of type topic about v, which

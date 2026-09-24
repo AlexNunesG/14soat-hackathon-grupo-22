@@ -69,7 +69,31 @@ type ConsumerConfig struct {
 	// ShutdownTimeout is how long in-flight messages may take to finish
 	// after Run's context is done; then they are canceled and requeued.
 	ShutdownTimeout time.Duration
+	// Metrics, when set, is told about every delivery handed to the
+	// handler.
+	Metrics Metrics
 }
+
+// Metrics is the consumer's metrics port (the service's Prometheus
+// collectors).
+type Metrics interface {
+	// RecordOutcome records the outcomes the consumer decides, when the
+	// handler returned an error: app.OutcomeRetried,
+	// app.OutcomeDeadLettered and app.OutcomeRequeued, with the time from
+	// the handler's start to the settlement. The outcomes of the
+	// deliveries the handler finished (acked) are reported by the handler
+	// itself, which knows them (done, failed, sent, ...).
+	app.OutcomeRecorder
+	// InFlight is called with +1 when the handler starts on a delivery and
+	// with -1 once the delivery is settled.
+	InFlight(delta int)
+}
+
+// noMetrics records nothing.
+type noMetrics struct{}
+
+func (noMetrics) RecordOutcome(app.Outcome, time.Duration) {}
+func (noMetrics) InFlight(int)                             {}
 
 // Consumer consumes a work queue with manual acknowledgements:
 //
@@ -113,6 +137,9 @@ func newConsumer(cfg ConsumerConfig, handler Handler, r retrier, log *slog.Logge
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = DefaultShutdownTimeout
+	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noMetrics{}
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -272,24 +299,39 @@ func requeue(d amqp.Delivery) { _ = d.Nack(false, true) }
 // handler's context carries the delivery's correlation fields
 // (deliveryContext), so every log line about the message has them.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
+	begin := time.Now()
+	c.cfg.Metrics.InFlight(1)
+	defer c.cfg.Metrics.InFlight(-1)
 	attempt := attemptOf(d.Headers)
 	ctx = deliveryContext(ctx, d, attempt)
 	err := c.handler.Handle(ctx, d.Body)
-	switch {
-	case err == nil:
+	if err == nil {
+		// The handler reported its outcome.
 		c.settle(ctx, "ack", d.Ack(false))
+		return
+	}
+	outcome := c.handleFailure(ctx, d, attempt, err)
+	c.cfg.Metrics.RecordOutcome(outcome, time.Since(begin))
+}
 
+// handleFailure settles a delivery whose handler failed with err, and
+// returns what it did with it.
+func (c *Consumer) handleFailure(ctx context.Context, d amqp.Delivery, attempt int, err error) app.Outcome {
+	switch {
 	case ctx.Err() != nil:
 		c.log.WarnContext(ctx, "message interrupted by shutdown; requeued", slog.Any("error", err))
 		c.settle(ctx, "requeue", d.Nack(false, true))
+		return app.OutcomeRequeued
 
 	case errors.Is(err, app.ErrMalformedMessage):
 		c.log.ErrorContext(ctx, "malformed message dead-lettered", slog.Any("error", err))
 		c.settle(ctx, "dead-letter", d.Nack(false, false))
+		return app.OutcomeDeadLettered
 
 	case errors.Is(err, app.ErrPermanent):
 		c.log.ErrorContext(ctx, "message failed permanently; dead-lettered without retry", slog.Any("error", err))
 		c.settle(ctx, "dead-letter", d.Nack(false, false))
+		return app.OutcomeDeadLettered
 
 	case attempt < c.cfg.MaxAttempts:
 		c.log.WarnContext(ctx, "message failed; retrying later",
@@ -298,9 +340,10 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 			c.log.ErrorContext(ctx, "could not schedule the retry; requeued", slog.Any("error", rerr))
 			sleep(ctx, requeueDelay)
 			c.settle(ctx, "requeue", d.Nack(false, true))
-			return
+			return app.OutcomeRequeued
 		}
 		c.settle(ctx, "ack", d.Ack(false))
+		return app.OutcomeRetried
 
 	default:
 		c.log.ErrorContext(ctx, "message failed on its last attempt; giving up", slog.Any("error", err))
@@ -308,9 +351,10 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 			c.log.ErrorContext(ctx, "could not record the failure; requeued", slog.Any("error", gerr))
 			sleep(ctx, requeueDelay)
 			c.settle(ctx, "requeue", d.Nack(false, true))
-			return
+			return app.OutcomeRequeued
 		}
 		c.settle(ctx, "dead-letter", d.Nack(false, false))
+		return app.OutcomeDeadLettered
 	}
 }
 

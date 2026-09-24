@@ -148,6 +148,9 @@ var smtpTLSModes = []string{"none", "starttls", "tls"}
 // HTTP configures the API server.
 type HTTP struct {
 	Addr string // HTTP_ADDR, host:port
+	// MetricsAddr is the internal listener of GET /metrics (METRICS_ADDR,
+	// host:port), kept off the public port (docs/observability.md).
+	MetricsAddr string
 	// ShutdownTimeout bounds the graceful shutdown: in-flight requests get
 	// this long to finish after SIGINT/SIGTERM.
 	ShutdownTimeout time.Duration
@@ -193,6 +196,7 @@ const MinJWTSecretLength = 32
 // development values for running a service from the host.
 var defaults = map[string]string{
 	"HTTP_ADDR":         ":8080",
+	"METRICS_ADDR":      ":9090",
 	"SHUTDOWN_TIMEOUT":  "15s",
 	"LOG_LEVEL":         "info",
 	"S3_ENDPOINT":       "localhost:8333",
@@ -233,6 +237,7 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
 		HTTP: HTTP{
 			Addr:            l.addr("HTTP_ADDR"),
+			MetricsAddr:     l.addr("METRICS_ADDR"),
 			ShutdownTimeout: l.duration("SHUTDOWN_TIMEOUT"),
 		},
 		LogLevel: l.logLevel(),

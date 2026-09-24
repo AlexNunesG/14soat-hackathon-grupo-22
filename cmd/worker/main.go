@@ -5,7 +5,8 @@
 // It wires configuration, logging and adapters, and holds no business
 // logic (ADR 0002).
 //
-// It serves GET /healthz and GET /readyz on HEALTH_ADDR. On SIGINT/SIGTERM
+// It serves GET /healthz, GET /readyz and GET /metrics (Prometheus) on
+// HEALTH_ADDR, an internal listener. On SIGINT/SIGTERM
 // it stops taking jobs, lets in-flight ones finish for up to
 // SHUTDOWN_TIMEOUT and requeues the rest, then publishes the events left
 // in the outbox.
@@ -23,6 +24,7 @@ import (
 	"video-processor/internal/adapters/ffmpeg"
 	httpapi "video-processor/internal/adapters/http"
 	"video-processor/internal/adapters/postgres"
+	"video-processor/internal/adapters/prom"
 	"video-processor/internal/adapters/rabbitmq"
 	rediscache "video-processor/internal/adapters/redis"
 	"video-processor/internal/adapters/storage"
@@ -30,6 +32,7 @@ import (
 	"video-processor/internal/app"
 	"video-processor/internal/platform/config"
 	"video-processor/internal/platform/logging"
+	"video-processor/internal/platform/metrics"
 )
 
 func main() {
@@ -60,6 +63,10 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	// Prometheus metrics (docs/observability.md), served on HEALTH_ADDR.
+	reg := metrics.NewRegistry("worker")
+	jobMetrics := prom.NewWorker(reg)
+
 	store, err := storage.New(storage.Config{
 		Endpoint:  cfg.Storage.Endpoint,
 		AccessKey: cfg.Storage.AccessKey,
@@ -91,12 +98,15 @@ func run() error {
 		return err
 	}
 	defer events.Close()
-	relay := app.NewOutboxRelay(postgres.NewOutbox(db), events, log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
+	outbox := postgres.NewOutbox(db)
+	outboxMetrics := prom.NewOutbox(reg, outbox.Pending)
+	relay := app.NewOutboxRelay(outbox, outboxMetrics.Publisher(events), log, cfg.Outbox.Interval, cfg.Outbox.BatchSize)
 
 	opts := []app.ProcessorOption{
 		app.WithProcessorTempDir(cfg.TempDir),
 		app.WithProcessorLogger(log),
 		app.OnEvent(relay.Notify),
+		app.WithProcessorMetrics(jobMetrics),
 	}
 	// Every status change invalidates the owner's cached video list
 	// (docs/cache.md), best effort: Redis errors never fail a job.
@@ -117,6 +127,7 @@ func run() error {
 		Concurrency:     cfg.Concurrency,
 		MaxAttempts:     cfg.MaxAttempts,
 		ShutdownTimeout: cfg.ShutdownTimeout,
+		Metrics:         jobMetrics,
 	}, processor, retries, log)
 	if err != nil {
 		return err
@@ -134,7 +145,7 @@ func run() error {
 	}
 	healthErr := make(chan error, 1)
 	go func() {
-		err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HealthAddr, health), ln, cfg.ShutdownTimeout)
+		err := httpapi.Serve(ctx, httpapi.NewServer(cfg.HealthAddr, metrics.Mux(reg, health)), ln, cfg.ShutdownTimeout)
 		if err != nil {
 			stop() // a worker without probes would look dead: shut down
 		}

@@ -40,8 +40,10 @@ type uploadBody struct {
 // request as soon as a file name has an unsupported extension. Nothing is
 // stored before every file has been received and checked. The temporary
 // files are removed when the request ends.
-func uploadVideos(log *slog.Logger, uploads UploadService, maxBytes int64, tempDir string) gin.HandlerFunc {
+func uploadVideos(log *slog.Logger, uploads UploadService, maxBytes int64, tempDir string, m *Metrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		spool := &fileSpool{dir: tempDir}
+		defer func() { m.recordUpload(c, spool.files) }()
 		if c.Request.ContentLength > maxBytes {
 			payloadTooLarge(c, maxBytes)
 			return
@@ -51,7 +53,6 @@ func uploadVideos(log *slog.Logger, uploads UploadService, maxBytes int64, tempD
 			missingFile(c)
 			return
 		}
-		spool := &fileSpool{dir: tempDir}
 		defer spool.remove(c.Request.Context(), log)
 
 		for {

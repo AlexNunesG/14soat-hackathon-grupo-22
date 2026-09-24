@@ -21,10 +21,11 @@ const DefaultAppURL = "http://localhost:8080"
 // skips a redelivered one. Only TopicVideoFailed sends an e-mail; other
 // events are acknowledged and ignored.
 type Notifier struct {
-	mailer Mailer
-	sent   NotificationLog
-	appURL string
-	log    *slog.Logger
+	mailer  Mailer
+	sent    NotificationLog
+	appURL  string
+	log     *slog.Logger
+	metrics OutcomeRecorder
 }
 
 // NotifierOption customizes Notifier.
@@ -40,9 +41,15 @@ func WithAppURL(url string) NotifierOption {
 	return func(n *Notifier) { n.appURL = url }
 }
 
+// WithNotifierMetrics sets the metrics port: the outcome of every event
+// handled without error (sent, duplicate, ignored) and its duration.
+func WithNotifierMetrics(m OutcomeRecorder) NotifierOption {
+	return func(n *Notifier) { n.metrics = m }
+}
+
 // NewNotifier returns the notification use case.
 func NewNotifier(mailer Mailer, sent NotificationLog, opts ...NotifierOption) *Notifier {
-	n := &Notifier{mailer: mailer, sent: sent, appURL: DefaultAppURL, log: slog.New(slog.DiscardHandler)}
+	n := &Notifier{mailer: mailer, sent: sent, appURL: DefaultAppURL, log: slog.New(slog.DiscardHandler), metrics: noMetrics{}}
 	for _, opt := range opts {
 		opt(n)
 	}
@@ -53,16 +60,27 @@ func NewNotifier(mailer Mailer, sent NotificationLog, opts ...NotifierOption) *N
 // with (e-mail sent, already sent, or nothing to send), an error wrapping
 // ErrMalformedMessage for a body that is not an event, an error wrapping
 // ErrPermanent when the mail server refused the e-mail for good, and any
-// other error for a failure worth retrying.
+// other error for a failure worth retrying. When it returns nil, it
+// reports the event's outcome to the metrics port.
 func (n *Notifier) Handle(ctx context.Context, body []byte) error {
+	begin := time.Now()
+	outcome, err := n.handle(ctx, body)
+	if err == nil {
+		n.metrics.RecordOutcome(outcome, time.Since(begin))
+	}
+	return err
+}
+
+// handle is Handle; it returns the event's outcome when err is nil.
+func (n *Notifier) handle(ctx context.Context, body []byte) (Outcome, error) {
 	e, err := DecodeVideoEvent(body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	log := n.log.With(slog.String("event_id", e.EventID), slog.String("video_id", e.VideoID))
 	if e.Type != TopicVideoFailed {
 		log.DebugContext(ctx, "event ignored: nothing to notify", slog.String("type", e.Type))
-		return nil
+		return OutcomeIgnored, nil
 	}
 	mail := FailureMail(e, n.appURL)
 	record := SentNotification{EventID: e.EventID, VideoID: e.VideoID, Kind: e.Type, Recipient: e.OwnerEmail}
@@ -74,15 +92,16 @@ func (n *Notifier) Handle(ctx context.Context, body []byte) error {
 		// Retrying would send the e-mail again; a later duplicate of the
 		// event is the lesser risk.
 		log.WarnContext(ctx, "failure e-mail sent, but not recorded as sent", slog.Any("error", err))
-		return nil
+		return OutcomeSent, nil
 	case err != nil:
-		return fmt.Errorf("send the failure e-mail of video %s: %w", e.VideoID, err)
+		return "", fmt.Errorf("send the failure e-mail of video %s: %w", e.VideoID, err)
 	case !sent:
 		log.InfoContext(ctx, "failure e-mail already sent; duplicate event ignored")
+		return OutcomeDuplicate, nil
 	default:
 		log.InfoContext(ctx, "failure e-mail sent")
+		return OutcomeSent, nil
 	}
-	return nil
 }
 
 // GiveUp is called when the e-mail of the event in body could not be sent

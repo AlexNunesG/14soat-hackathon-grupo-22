@@ -30,12 +30,16 @@ The harness builds the app from the module root, runs it as a separate process
 on a free port (`PORT` env var) in a temporary working directory, and stops it
 with `SIGTERM` at the end. All tests run.
 
-Coverage of the app:
+Coverage of the app (a relative `COVERAGE_OUT` is written at the module root):
 
 ```sh
 COVERAGE_OUT=coverage.out go test -count=1 ./tests/integration/
 go tool cover -func=coverage.out
 ```
+
+CI (`.github/workflows/ci.yml`) runs this suite with `-race` on every pull
+request and on pushes to `main`, after `gofmt` and `go vet`. The coverage
+summary is shown on the run page and uploaded as an artifact.
 
 ## Running against another implementation
 

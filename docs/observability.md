@@ -217,18 +217,154 @@ rabbitmq_detailed_queue_consumers{vhost="/",queue="video.process"} 2
 rabbitmq_detailed_queue_messages_ready{vhost="/",queue="video.process.dlq"} 0
 ```
 
-### Scraping (next step: Prometheus in compose)
+## Prometheus
+
+The compose stack runs Prometheus (`prom/prometheus:v3.5.0`) with
+[`deploy/prometheus/prometheus.yml`](../deploy/prometheus/prometheus.yml)
+and the alert rules of
+[`deploy/prometheus/rules/`](../deploy/prometheus/rules/).
+
+- **UI: <http://localhost:9091>** (`127.0.0.1:${PROMETHEUS_PORT:-9091}`).
+  The host port is 9091, not Prometheus's usual 9090, so it is not mistaken
+  for the api's internal metrics port (`api:9090`, never published). Useful
+  pages: *Status → Targets* (`/targets`), *Alerts* (`/alerts`), *Query*.
+- Scrapes every **5 s** (and evaluates the rules every 5 s): fast enough to
+  watch a burst of uploads live. Retention is small (2 days, at most
+  512 MB, `PROMETHEUS_RETENTION`), in the `prometheus-data` volume
+  (`make down` removes it).
+- After editing the config or the rules: `make obs-check`, then
+  `curl -X POST http://localhost:9091/-/reload` (`--web.enable-lifecycle`)
+  or `docker compose -f deploy/docker-compose.yml restart prometheus`.
+
+### Scrape jobs
 
 | job | target | path |
 |---|---|---|
+| `prometheus` | `localhost:9090` (itself) | `/metrics` |
 | `api` | `api:9090` | `/metrics` |
-| `worker` | every replica: `dns_sd_configs` with `names: [worker]`, `type: A`, `port: 8081` (Docker's DNS returns one A record per replica of the `worker` service) | `/metrics` |
+| `worker` | every replica: `dns_sd_configs` with `names: [worker]`, `type: A`, `port: 8081`, refreshed every 5 s. Docker's DNS returns one A record per container of the `worker` service, so `--scale worker=N` adds or removes targets with no config change (`instance` is the replica's `ip:8081`). | `/metrics` |
 | `notifier` | `notifier:8081` | `/metrics` |
-| `rabbitmq` | `rabbitmq:15692` | `/metrics` |
-| `rabbitmq-queues` | `rabbitmq:15692` | `/metrics/detailed`, `params: {vhost: ["/"], family: [queue_coarse_metrics, queue_consumer_count]}` |
+| `rabbitmq` | `rabbitmq:15692` | `/metrics` (node totals) |
+| `rabbitmq-queues` | `rabbitmq:15692` | `/metrics/detailed`, `params: {vhost: ["/"], family: [queue_coarse_metrics, queue_consumer_count]}` (per-queue depth and consumers) |
+
+```sh
+curl -s http://localhost:9091/api/v1/targets \
+  | jq -r '.data.activeTargets[] | "\(.labels.job)\t\(.labels.instance)\t\(.health)"'
+```
 
 Useful queries: `sum by (outcome) (rate(videoproc_jobs_total[5m]))`,
 `histogram_quantile(0.95, sum by (le) (rate(videoproc_job_duration_seconds_bucket[5m])))`,
 `sum by (route) (rate(videoproc_http_requests_total{status=~"5.."}[5m]))`,
 `rabbitmq_detailed_queue_messages_ready{queue="video.process"}`,
 `max(videoproc_outbox_pending)`.
+
+## Alerts
+
+Rules: [`deploy/prometheus/rules/video-processor.yml`](../deploy/prometheus/rules/video-processor.yml),
+checked by `make obs-check` (`promtool check config` and `check rules`,
+run from the Prometheus image; CI runs it too). There is **no
+Alertmanager** in the local stack: alerts are shown on
+<http://localhost:9091/alerts> and on the dashboard (the *Alerts firing*
+tile and the *Alerts* table). `severity: critical` means users are
+affected now; `warning` needs a look.
+
+| alert | severity | fires when |
+|---|---|---|
+| `ScrapeTargetDown` | critical | A target (`up == 0`) cannot be scraped for 1 min: a stopped or unreachable api, worker replica, notifier or RabbitMQ. A restarted worker is back well within the minute; a worker removed by `--scale` leaves the targets instead. |
+| `NoWorkerConsumers` | critical | `video.process` has had no consumer for 1 min: uploads are accepted but stay `PENDING` (RF1). |
+| `NoNotifierConsumers` | warning | `video.notify` has had no consumer for 2 min: failure e-mails are delayed (RF5). |
+| `VideoProcessDLQNotEmpty` | warning | `video.process.dlq` has messages for 1 min: jobs given up after every retry, or malformed. |
+| `JobFailureRatioHigh` | warning | Over 10 min, more than half of the finished jobs ended `FAILED` (at least 5 jobs), for 5 min. Corrupt uploads fail too, so the bar is high: it catches a worker that fails everything. |
+| `JobRetriesHigh` | warning | More than 0.1 jobs/s go to a retry queue for 5 min (storage, database or broker errors). |
+| `VideoProcessBacklog` | warning | More than 50 jobs wait in `video.process` for 10 min: add workers (RF2: nothing is lost, but videos wait). |
+| `OutboxStuck` | critical | Outbox rows are pending and nothing has been published for 2 min (ADR 0004): uploads are recorded but not queued. |
+| `OutboxBacklogGrowing` | warning | More than 100 rows pending and still growing, for 5 min. |
+| `APIHighErrorRatio` | critical | More than 5% of the api requests (probes left out) are 5xx for 5 min, with at least 0.1 req/s. |
+| `VideoNotifyDLQNotEmpty` | warning | `video.notify.dlq` has messages for 1 min: e-mails given up after ~21 min of retries. |
+| `SMTPErrors` | warning | SMTP sends keep failing for 5 min (they are retried). |
+
+To see one fire: `docker compose -f deploy/docker-compose.yml stop notifier`
+→ after about a minute `ScrapeTargetDown{job="notifier"}` fires and
+`NoNotifierConsumers` is pending (it fires after 2 min); `start notifier`
+resolves both.
+
+## Grafana
+
+![Grafana dashboard during a burst of uploads: 2 workers × 2 jobs in parallel](images/grafana-dashboard.png)
+
+Grafana (`grafana/grafana:12.1.1`) is provisioned from
+[`deploy/grafana/`](../deploy/grafana/), with nothing to click:
+
+- `provisioning/datasources/prometheus.yml`: the Prometheus datasource
+  (`uid: prometheus`, fixed: the dashboards reference it).
+- `provisioning/dashboards/video-processor.yml`: loads every JSON of
+  `dashboards/` into the *FIAP X* folder, re-read every 10 s.
+- `dashboards/video-processor.json`: the **FIAP X Video Processor**
+  dashboard (`uid: video-processor`), also the home dashboard.
+
+**Open <http://localhost:3000>** (`127.0.0.1:${GRAFANA_PORT:-3000}`): the
+dashboard opens read-only for anonymous visitors (Viewer role, a local-demo
+setting; `GRAFANA_ANONYMOUS_ENABLED=false` turns it off). To edit, sign in
+as `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` (development defaults
+`admin` / `admin`, see `.env.example`). A provisioned dashboard cannot be
+saved from the UI: edit the JSON (or export it from the UI with *Export →
+Export as JSON*) and replace `dashboards/video-processor.json`. Direct
+link: <http://localhost:3000/d/video-processor>.
+
+Grafana makes no outbound calls (plugin preinstall, update checks, news and
+usage reporting are disabled), so the stack runs offline.
+
+### The dashboard
+
+Default range: last 30 min, refresh 10 s. The `route` variable filters the
+latency percentiles panel. Colors are consistent: DONE / `sent` / `hit`
+green, FAILED red, `dead_lettered` orange-red, `retried` amber; 5xx
+series red. Every panel has a description (the ⓘ next to its title).
+Counts in the Overview tiles and the per-30 s bars are exact (differences
+of the counters, not `increase()`, which extrapolates), so *Videos
+uploaded* = *DONE* + *FAILED* + in progress + waiting once a burst is
+accepted.
+
+| row | panels | shows |
+|---|---|---|
+| **Overview** | Videos uploaded, Videos DONE, Videos FAILED (in the selected range), Jobs in progress, Jobs waiting (`video.process` ready), DLQ depth, E-mails sent, Alerts firing; the Alerts table (pending and firing) | The RF story at a glance. |
+| **API: throughput and latency** | Request rate by route and status; Uploads by result (per 30 s); 5xx ratio (5% alert threshold dashed); Latency p95 by route; Latency p50 / p95 / p99 (`$route`) | RF2/RF3/RF4 traffic: uploads accepted or rejected, response times of each route. |
+| **Processing (RF1, RF2)** | Jobs finished by outcome (per 30 s); Job duration p50 / p95 (DONE); Jobs in progress per worker (stacked, one series per replica); Frames extracted (frames/s); Worker replicas up; Queue `video.process` (ready, unacked, retry queues); Consumers; Outbox pending | Parallel processing across replicas, queue absorbing bursts, retries, the outbox relay. |
+| **Notifications (RF5)** | Notifications by result (per 30 s); SMTP send duration p50 / p95; Queue `video.notify` (ready, unacked, retries, DLQ) | Failure e-mails. |
+| **Cache** | List cache hit ratio; lookups by result | The Redis cache of `GET /api/v1/videos` ([`cache.md`](cache.md)). |
+| **Runtime** | CPU (100% = one core), heap in use, goroutines, per service instance | Resource use of api, workers and notifier. |
+
+### Demo: RF1 and RF2 live
+
+1. `make up` (the whole stack, Prometheus and Grafana included) and open
+   <http://localhost:3000>.
+2. Sign up and upload a burst of videos in one go (the web UI at
+   <http://localhost:8080> accepts several files, or `curl -F videos=@a.mp4
+   -F videos=@b.mp4 …`). Videos of a minute or more keep the workers busy
+   long enough to see them.
+3. Watch: *Jobs waiting* jumps and drains, *Jobs in progress per worker*
+   shows every replica busy at once (2 replicas × `WORKER_CONCURRENCY` 2 =
+   4 jobs in parallel), *Jobs finished by outcome* fills with green (DONE)
+   and red (corrupt files: FAILED), and *E-mails sent* counts one failure
+   e-mail per FAILED video (in MailHog, <http://localhost:8025>).
+4. Scale out while jobs are waiting:
+   `docker compose -f deploy/docker-compose.yml up -d --scale worker=4`.
+   Within about 10 s the new replicas appear in Prometheus (*Status →
+   Targets*, job `worker`), *Worker replicas up* shows 4, *Consumers* on
+   `video.process` goes to 4 and *Jobs in progress per worker* gets new
+   series. Scale back with `--scale worker=2`: the targets leave again (no
+   `ScrapeTargetDown`).
+5. Stop a worker mid-burst (`docker compose -f deploy/docker-compose.yml
+   restart worker`): in-flight jobs finish within `WORKER_SHUTDOWN_TIMEOUT`
+   or go back to the queue and are finished by another replica; no video is
+   lost (RF2).
+
+### Why Prometheus and Grafana start by default
+
+They are ordinary services of `deploy/docker-compose.yml`, not behind a
+compose profile, so `make up` gives the full demo and the integration suite
+starts them too. They start in parallel with the rest of the stack and are
+healthy in a few seconds (Grafana ~5 s): measured locally, `up -d --wait`
+of the whole stack took 8.3 s with them and 8.3 s without them. They need
+no other service to start (a target that is not up yet is just `down` until
+it is), and only Grafana waits for Prometheus to be healthy.

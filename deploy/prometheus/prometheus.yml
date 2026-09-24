@@ -1,0 +1,56 @@
+# Prometheus of the local stack (docs/observability.md, "Prometheus").
+# Mounted read-only at /etc/prometheus/prometheus.yml by
+# deploy/docker-compose.yml; the rules are in ./rules. Validate with
+# `make obs-check` (promtool check config / check rules).
+#
+# Every target is scraped over the compose network: the services' metrics
+# ports are not published (docs/observability.md, "Where they are served").
+
+global:
+  # Fast enough to watch a burst of uploads live on the dashboard.
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Internal listener METRICS_ADDR (:9090) of the api; the public port 8080
+  # answers /metrics with 404.
+  - job_name: api
+    static_configs:
+      - targets: ["api:9090"]
+
+  # Every worker replica: Docker's DNS returns one A record per container of
+  # the "worker" service, so `docker compose up --scale worker=N` adds (or
+  # removes) targets within refresh_interval, with no config change.
+  - job_name: worker
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 8081
+        refresh_interval: 5s
+
+  - job_name: notifier
+    static_configs:
+      - targets: ["notifier:8081"]
+
+  # rabbitmq_prometheus plugin: node-wide totals (cheap).
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # Per-queue depth and consumers (video.process, video.notify, their
+  # retry queues and DLQs): rabbitmq_detailed_queue_* {vhost, queue}.
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      vhost: ["/"]
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ["rabbitmq:15692"]

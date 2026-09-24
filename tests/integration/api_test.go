@@ -207,21 +207,31 @@ func registerAndLogin(t *testing.T) (testUser, string) {
 // of the field "videos", and returns it with its content type.
 func multipartBody(t *testing.T, files ...namedFile) (*bytes.Buffer, string) {
 	t.Helper()
+	body, contentType, err := buildMultipart(files...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, contentType
+}
+
+// buildMultipart is multipartBody for use from any goroutine: it returns
+// errors instead of failing the test.
+func buildMultipart(files ...namedFile) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	w := multipart.NewWriter(body)
 	for _, f := range files {
 		part, err := w.CreateFormFile("videos", f.name)
 		if err != nil {
-			t.Fatal(err)
+			return nil, "", err
 		}
 		if _, err := part.Write(f.data); err != nil {
-			t.Fatal(err)
+			return nil, "", err
 		}
 	}
 	if err := w.Close(); err != nil {
-		t.Fatal(err)
+		return nil, "", err
 	}
-	return body, w.FormDataContentType()
+	return body, w.FormDataContentType(), nil
 }
 
 // uploadVideos sends POST /api/v1/videos with the files in the multipart
@@ -237,6 +247,14 @@ func uploadVideos(t *testing.T, token string, files ...namedFile) (*http.Respons
 func mustUpload(t *testing.T, token string, files ...namedFile) []video {
 	t.Helper()
 	resp, body := uploadVideos(t, token, files...)
+	return acceptedVideos(t, resp, body, files...)
+}
+
+// acceptedVideos checks the response to an upload of files: 202 and the
+// created videos, one per file, in upload order, all PENDING. It returns
+// them.
+func acceptedVideos(t *testing.T, resp *http.Response, body []byte, files ...namedFile) []video {
+	t.Helper()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("upload: expected 202, got %d: %s", resp.StatusCode, body)
 	}
@@ -259,6 +277,35 @@ func mustUpload(t *testing.T, token string, files ...namedFile) []video {
 		videos = append(videos, v)
 	}
 	return videos
+}
+
+// postVideos is uploadVideos for use from any goroutine: it reports errors
+// instead of failing the test, and returns the response with its body
+// already read and closed. A transport error or timeout is returned as err.
+func postVideos(token string, files ...namedFile) (*http.Response, []byte, error) {
+	if baseURL == "" {
+		return nil, nil, errNoApp
+	}
+	body, contentType, err := buildMultipart(files...)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/videos", body)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", contentType)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the response body: %w", err)
+	}
+	return resp, data, nil
 }
 
 // uploadOne uploads a single file and returns the created video.
@@ -366,6 +413,60 @@ func listVideos(t *testing.T, token, query string) videoPage {
 		page.Items = append(page.Items, decodeVideo(t, item))
 	}
 	return page
+}
+
+// listAll fetches every page of GET /api/v1/videos (100 per page) and
+// returns all the caller's videos. It fails the test when the pages
+// disagree on total or the items do not add up to it.
+func listAll(t *testing.T, token string) []video {
+	t.Helper()
+	var all []video
+	for page := 1; ; page++ {
+		p := listVideos(t, token, fmt.Sprintf("page=%d&page_size=100", page))
+		all = append(all, p.Items...)
+		if len(p.Items) == 0 || len(all) >= p.Total {
+			if len(all) != p.Total {
+				t.Fatalf("listing every page returned %d videos, but total is %d", len(all), p.Total)
+			}
+			return all
+		}
+	}
+}
+
+// waitForFinalStatuses polls the caller's list every interval until each
+// video in ids has a final status (DONE or FAILED), and returns the last
+// snapshot of those videos by id. Each snapshot, one listing of the caller's
+// videos, is passed to observe (if not nil) before checking it. It fails the
+// test when an id is missing from the list and when timeout expires.
+func waitForFinalStatuses(t *testing.T, token string, ids []string, interval, timeout time.Duration, observe func(map[string]video)) map[string]video {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		snapshot := map[string]video{}
+		for _, v := range listAll(t, token) {
+			snapshot[v.ID] = v
+		}
+		if observe != nil {
+			observe(snapshot)
+		}
+		var pending []string
+		for _, id := range ids {
+			v, ok := snapshot[id]
+			switch {
+			case !ok:
+				t.Fatalf("video %s is missing from its owner's list", id)
+			case v.Status != statusDone && v.Status != statusFailed:
+				pending = append(pending, v.OriginalName+" "+v.Status)
+			}
+		}
+		if len(pending) == 0 {
+			return snapshot
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d videos did not reach a final status within %s: %v", len(pending), len(ids), timeout, pending)
+		}
+		time.Sleep(interval)
+	}
 }
 
 // processingTimeout bounds waitForStatus: PROCESSING_TIMEOUT (a Go

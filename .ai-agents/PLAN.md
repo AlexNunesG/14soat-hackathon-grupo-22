@@ -230,19 +230,22 @@ status, download; **1.3b** concurrency, resilience, notification, e2e.
       pagination; get-by-id; 404 for another user's id.
 - [x] `download_test.go` — valid zip when DONE, 409 while PENDING/PROCESSING,
       404 for another user / unknown id.
-- [ ] `concurrency_test.go` — **RF1**: N videos uploaded together are
+- [x] `concurrency_test.go` — **RF1**: N videos uploaded together are
       processed in parallel (e.g. total time < sum of individual times, or
       several PROCESSING at once).
-- [ ] `resilience_test.go` — **RF2**: burst of M concurrent uploads, every one
+- [x] `resilience_test.go` — **RF2**: burst of M concurrent uploads, every one
       accepted and eventually DONE (none lost); optional: stop/restart a worker
       mid-run (`docker compose restart worker`) and nothing is lost.
-- [ ] `notification_test.go` — **RF5**: a failed video produces an e-mail to
+- [x] `notification_test.go` — **RF5**: a failed video produces an e-mail to
       the owner (MailHog API) naming the video and the error; a successful one
       does not send a failure mail.
-- [ ] `e2e_test.go` — register → login → upload several → poll → list →
+- [x] `e2e_test.go` — register → login → upload several → poll → list →
       download → failure mail.
 
 **1.4 Clean up**
+- [ ] `make tools`: build golangci-lint with the module's Go toolchain
+      (`GOTOOLCHAIN=go1.27.x`); a plain `go install` may pick an older Go that
+      cannot lint a Go 1.27 module.
 - [ ] Drop the dead coverage plumbing: `make cover`, the CI coverage steps,
       and the `COVERAGE_OUT` mention in `.golangci.yml`.
 - [ ] Rewrite `tests/integration/README.md` (new contract, how to run against

@@ -102,6 +102,20 @@ func makeMP4(t *testing.T, seconds int) []byte {
 	return makeVideo(t, "mp4", "mpeg4", seconds)
 }
 
+// makeSlowVideo returns a static 1280x720 H.264 mp4 of the given length at
+// 25 fps: a small file (a static color compresses to tens of KB) that is
+// slow to process, because every frame is decoded at full size and each
+// second yields a 1280x720 PNG. For 120 s, ffmpeg alone takes about 1.2 s
+// on a 4-core machine, before queueing, storage and zipping. Tests use it
+// when they must observe a video while it is PROCESSING.
+func makeSlowVideo(t *testing.T, seconds int) []byte {
+	t.Helper()
+	return ffmpeg(t, "slow.mp4",
+		"-f", "lavfi", "-i", fmt.Sprintf("color=c=blue:size=1280x720:rate=25:duration=%d", seconds),
+		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+	)
+}
+
 // makeAudioOnly returns a valid 1 s mp4 file with an AAC audio stream and
 // no video stream.
 func makeAudioOnly(t *testing.T) []byte {

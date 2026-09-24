@@ -53,19 +53,19 @@ linters:
     presets:
       - std-error-handling
     rules:
-      # Test harness patterns: tests build and run the app and ffmpeg with
-      # computed arguments, some from env such as COVERAGE_OUT (G204,
-      # G702), read files they just generated (G304) and
-      # create world-readable fixtures in temp dirs (G301, G306).
+      # Test harness patterns: tests run ffmpeg, docker compose and `go env`
+      # with computed arguments (G204) and read the files ffmpeg just
+      # generated in a temp dir (G304).
       - path: _test\.go
         linters: [gosec]
-        text: "G(204|301|304|306|702):"
-      # Tests talk to a local server; a context per request adds nothing.
+        text: "G(204|304):"
+      # Tests talk to a local server and run short local commands; a context
+      # per request or command adds nothing.
       - path: _test\.go
         linters: [noctx]
-      # False positive: the get() helper reads and closes the body before
-      # returning the *http.Response, which callers only use for its status
-      # and headers.
+      # False positive: the request helpers (doRequest, register, login, ...)
+      # read and close the body before returning the *http.Response with the
+      # body bytes; callers only use the response for its status and headers.
       - path: _test\.go
         linters: [bodyclose]
 

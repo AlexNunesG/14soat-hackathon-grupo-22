@@ -89,7 +89,7 @@ func resetWorkspace(t *testing.T) {
 	t.Cleanup(func() {
 		for _, dir := range []string{"uploads", "outputs", "temp"} {
 			os.RemoveAll(filepath.Join(referenceDir, dir))
-			os.MkdirAll(filepath.Join(referenceDir, dir), 0755)
+			_ = os.MkdirAll(filepath.Join(referenceDir, dir), 0755)
 		}
 	})
 }

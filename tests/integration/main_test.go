@@ -144,7 +144,7 @@ func startReferenceApp(moduleRoot string) (*referenceApp, error) {
 	build := exec.Command("go", append(args, ".")...)
 	build.Dir = moduleRoot
 	if out, err := build.CombinedOutput(); err != nil {
-		return fail(fmt.Errorf("building the app failed: %v\n%s", err, out))
+		return fail(fmt.Errorf("building the app failed: %w\n%s", err, out))
 	}
 
 	port, err := freePort()
@@ -167,9 +167,9 @@ func startReferenceApp(moduleRoot string) (*referenceApp, error) {
 
 	baseURL = "http://127.0.0.1:" + port
 	if err := waitForServer(30 * time.Second); err != nil {
-		app.cmd.Process.Kill()
-		app.cmd.Wait()
-		return fail(fmt.Errorf("%v\napp output:\n%s", err, app.log))
+		_ = app.cmd.Process.Kill()
+		_ = app.cmd.Wait()
+		return fail(fmt.Errorf("%w\napp output:\n%s", err, app.log))
 	}
 	reference = app
 	return app, nil
@@ -208,10 +208,10 @@ func (a *referenceApp) stop() error {
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("app did not exit cleanly: %v\napp output:\n%s", err, a.log)
+			return fmt.Errorf("app did not exit cleanly: %w\napp output:\n%s", err, a.log)
 		}
 	case <-time.After(30 * time.Second):
-		a.cmd.Process.Kill()
+		_ = a.cmd.Process.Kill()
 		return fmt.Errorf("app did not stop within 30s after SIGTERM")
 	}
 
@@ -223,7 +223,7 @@ func (a *referenceApp) stop() error {
 		}
 		cmd := exec.Command("go", "tool", "covdata", "textfmt", "-i="+a.coverDir, "-o="+out)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("writing coverage profile: %v\n%s", err, output)
+			return fmt.Errorf("writing coverage profile: %w\n%s", err, output)
 		}
 	}
 	return nil
@@ -232,7 +232,7 @@ func (a *referenceApp) stop() error {
 func goEnv(key string) (string, error) {
 	out, err := exec.Command("go", "env", key).Output()
 	if err != nil {
-		return "", fmt.Errorf("go env %s: %v", key, err)
+		return "", fmt.Errorf("go env %s: %w", key, err)
 	}
 	value := strings.TrimSpace(string(out))
 	if value == "" || value == os.DevNull {

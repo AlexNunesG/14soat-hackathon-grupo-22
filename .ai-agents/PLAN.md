@@ -365,8 +365,12 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       session) with identical outcomes.
 
 ### Phase 5 — Quality (RT4)
-- [ ] Coverage report in CI; target ≥ 80% on domain/use cases.
-- [ ] Static analysis: `golangci-lint`, `govulncheck`; optional SonarCloud.
+- [x] Coverage report in CI; target ≥ 80% on domain/use cases (`make coverage`;
+      combined `internal/domain` + `internal/app` at 95.0%; see
+      [`docs/quality.md`](../docs/quality.md)).
+- [x] Static analysis: `golangci-lint` (since Phase 0.4), `govulncheck`
+      (`make vulncheck`, wired into CI). SonarCloud skipped: needs an
+      external account/token this project doesn't have.
 - [ ] Consider quorum queues with `x-delivery-limit` for `video.process`: a
       job that crashes the worker every time (e.g. OOM) is redelivered forever
       on a classic queue (found in 2.3).

@@ -72,4 +72,9 @@ golangci-lint run ./...  # pinned version: make tools
 make obs-check        # promtool check of deploy/prometheus (docker)
 make k8s-check        # kubectl kustomize render of deploy/k8s (offline)
 go test -race ./...   # needs ffmpeg in PATH
+make coverage         # internal/domain + internal/app unit coverage, must be >= 80%
+make vulncheck        # govulncheck ./...; pinned version: make tools
 ```
+
+See [`docs/quality.md`](docs/quality.md) for the coverage target and how CI
+enforces it.

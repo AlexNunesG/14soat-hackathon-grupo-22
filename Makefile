@@ -9,25 +9,37 @@ PROMTOOL         := docker run --rm -v "$(CURDIR)/deploy/prometheus:/etc/prometh
 
 # Keep in sync with the golangci-lint step in .github/workflows/ci.yml.
 GOLANGCI_LINT_VERSION ?= v2.14.0
+# Keep in sync with the govulncheck step in .github/workflows/ci.yml.
+GOVULNCHECK_VERSION ?= v1.8.0
 # Prefer the copy `make tools` installs (GOBIN or GOPATH/bin) over any other
-# golangci-lint in PATH, which may be older than the pinned version.
+# golangci-lint/govulncheck in PATH, which may be older than the pinned version.
 GOBIN_DIR     := $(or $(shell go env GOBIN),$(shell go env GOPATH)/bin)
 GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v golangci-lint 2>/dev/null))
+GOVULNCHECK   ?= $(or $(wildcard $(GOBIN_DIR)/govulncheck),$(shell command -v govulncheck 2>/dev/null))
+
+# Coverage target for `make coverage` (Phase 5.1): combined statement
+# coverage of internal/domain + internal/app, the packages the plan names
+# ("domain/use cases").
+COVERAGE_THRESHOLD ?= 80
 
 .DEFAULT_GOAL := help
 
-.PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down migrate logs docker-build compose-file obs-check k8s-check check clean loadtest
+.PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration coverage \
+	vulncheck build up down migrate logs docker-build compose-file obs-check k8s-check \
+	check clean loadtest
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 # `go env GOVERSION` run here resolves the toolchain go.mod asks for (with
-# the default GOTOOLCHAIN=auto). Building golangci-lint with it lets it lint
-# this module; a plain `go install` would use the local Go, which may be older.
-tools: ## Install the pinned golangci-lint (built with the module's Go) into GOBIN
+# the default GOTOOLCHAIN=auto). Building golangci-lint/govulncheck with it
+# lets them analyze this module; a plain `go install` would use the local
+# Go, which may be older.
+tools: ## Install the pinned golangci-lint and govulncheck (built with the module's Go) into GOBIN
 	GOTOOLCHAIN=$$(go env GOVERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	GOTOOLCHAIN=$$(go env GOVERSION) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@"$(GOBIN_DIR)/golangci-lint" version
+	@"$(GOBIN_DIR)/govulncheck" -version
 
 fmt: ## Format all Go files in place (gofmt -w)
 	gofmt -w .
@@ -62,6 +74,24 @@ test: ## Run all tests with the race detector (needs ffmpeg in PATH)
 
 test-integration: ## Run the integration suite verbosely (needs ffmpeg in PATH)
 	go test -v -race -count=1 ./tests/integration/
+
+coverage: ## Unit-test coverage for internal/domain + internal/app; fails below COVERAGE_THRESHOLD% (default 80)
+	go test -race -coverprofile=coverage.out -covermode=atomic ./internal/domain/... ./internal/app/...
+	go tool cover -func=coverage.out
+	@pct=$$(go tool cover -func=coverage.out | awk '/^total:/ { gsub("%","",$$3); print $$3 }'); \
+	echo "combined coverage (internal/domain + internal/app): $$pct%"; \
+	awk -v p="$$pct" -v t="$(COVERAGE_THRESHOLD)" 'BEGIN { exit (p + 0 >= t + 0) ? 0 : 1 }' || { \
+		echo "coverage $$pct% is below the $(COVERAGE_THRESHOLD)% target for internal/domain + internal/app" >&2; \
+		exit 1; \
+	}
+
+vulncheck: ## Scan the module for known vulnerabilities (golang.org/x/vuln/cmd/govulncheck)
+	@if [ -z "$(GOVULNCHECK)" ]; then \
+		echo "govulncheck not found. Install the pinned version with:" >&2; \
+		echo "  make tools" >&2; \
+		exit 1; \
+	fi
+	"$(GOVULNCHECK)" ./...
 
 build: ## Build all packages
 	go build ./...
@@ -104,7 +134,7 @@ k8s-check: ## Validate the Kubernetes manifests render (kubectl kustomize, offli
 		echo "skipping overlays/prod render: deploy/k8s/overlays/prod/secrets.env not present (see deploy/k8s/README.md)"; \
 	fi
 
-check: lint obs-check k8s-check test ## Run everything CI runs; use before pushing
+check: lint obs-check k8s-check test coverage vulncheck ## Run everything CI runs; use before pushing
 
 # Compose's default network name (project-dir_default); override if the
 # stack was started with COMPOSE_PROJECT_NAME set, e.g.

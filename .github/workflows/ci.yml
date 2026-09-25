@@ -65,3 +65,39 @@ jobs:
 
       - name: Integration tests
         run: go test -v -race -count=1 ./...
+
+      # Unit-test coverage for internal/domain + internal/app (Phase 5.1);
+      # standalone from the compose stack above, so it runs fast even if the
+      # integration step is skipped/fails first.
+      - name: Coverage (internal/domain + internal/app)
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./internal/domain/... ./internal/app/...
+          go tool cover -func=coverage.out | tee coverage.txt
+          {
+            echo "### Coverage (internal/domain + internal/app)";
+            echo;
+            echo '```';
+            cat coverage.txt;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+          pct=$(awk '/^total:/ { gsub("%","",$3); print $3 }' coverage.txt)
+          echo "combined coverage: $pct%"
+          awk -v p="$pct" 'BEGIN { exit (p + 0 >= 80) ? 0 : 1 }' || {
+            echo "coverage $pct% is below the 80% target for internal/domain + internal/app" >&2;
+            exit 1;
+          }
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+      # Keep GOVULNCHECK_VERSION in sync with the Makefile.
+      - name: Install govulncheck
+        run: GOTOOLCHAIN=$(go env GOVERSION) go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: govulncheck
+        run: govulncheck ./...

@@ -413,8 +413,10 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       `main` already passed CI" assumption (§ its comments) actually hold.
 
 ### Phase 7 — Documentation and delivery (D1–D4)
-- [ ] `README.md`: overview, how to run locally in one command, how to test,
-      API examples (curl), env vars.
+- [x] [`README.md`](../README.md): overview, how to run locally in one
+      command (`make up`), how to test, API examples (curl, verified live end
+      to end), env vars, D2 resource-script pointers, D3 repo link, and a
+      documentation index.
 - [ ] `docs/architecture.md`: context + container diagrams (C4 / Mermaid),
       sequence diagrams (upload, processing, failure notification), data model.
       → **D1**

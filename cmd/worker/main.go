@@ -133,6 +133,23 @@ func run() error {
 		return err
 	}
 
+	// Reconciles video.process.dlq (ADR 0005): a job RabbitMQ's own
+	// x-delivery-limit gave up on, because the consumer crashed on every
+	// delivery before Handle ever got to run (so no attempt was ever
+	// recorded and the video was never marked FAILED). It reuses the
+	// processor's GiveUp logic (Reconcile), idempotently.
+	dlqReconciler, err := rabbitmq.NewDeadLetterConsumer(rabbitmq.ReconcilerConfig{
+		URL:             cfg.Broker.URL,
+		Name:            "worker-dlq-reconciler-" + host,
+		Queue:           rabbitmq.VideoProcess.DeadLetterQueue(),
+		ShutdownTimeout: cfg.ShutdownTimeout,
+	}, processor, log)
+	if err != nil {
+		return err
+	}
+	dlqErr := make(chan error, 1)
+	go func() { dlqErr <- dlqReconciler.Run(ctx) }()
+
 	health := httpapi.NewHealthRouter(log, []httpapi.Check{
 		{Name: "database", Pinger: db},
 		{Name: "broker", Pinger: broker},
@@ -167,7 +184,10 @@ func run() error {
 
 	log.Info("worker started", slog.Int("concurrency", cfg.Concurrency), slog.String("health_addr", ln.Addr().String()))
 	consumeErr := consumer.Run(ctx)
-	stop() // also stops the health server if the consumer returned first
+	stop() // also stops the health server and the DLQ reconciler if the consumer returned first
+	if derr := <-dlqErr; derr != nil && consumeErr == nil {
+		consumeErr = derr
+	}
 	if err := <-healthErr; err != nil {
 		return err
 	}

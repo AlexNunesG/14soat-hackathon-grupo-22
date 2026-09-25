@@ -408,3 +408,37 @@ func TestGiveUpMarksFailed(t *testing.T) {
 		t.Errorf("repository failure: err = %v", err)
 	}
 }
+
+// TestReconcileMarksFailed covers the DLQ reconciler path
+// (docs/adr/0005-quorum-queues-delivery-limit.md): a job RabbitMQ's own
+// delivery-limit gave up on, which never reached GiveUp because the
+// consumer crashed before Handle ever ran. Reconcile must behave exactly
+// like GiveUp: same idempotency, same handling of unknown videos and
+// malformed bodies, same error propagation.
+func TestReconcileMarksFailed(t *testing.T) {
+	v := pendingVideo()
+	v.Status = domain.StatusProcessing
+	env := newProcessorEnv(t, v)
+	p := env.processor()
+
+	if err := p.Reconcile(context.Background(), jobBody(t, videoID)); err != nil {
+		t.Fatal(err)
+	}
+	got := env.repo.video(videoID)
+	if got.Status != domain.StatusFailed || !strings.Contains(got.ErrorMessage, "delivery limit") {
+		t.Errorf("video %+v", got)
+	}
+	// Idempotent: a redelivered dead letter (the reconciler's own nack with
+	// requeue on a transient failure) must not error on an already-failed
+	// video, an unknown one or a malformed body.
+	if err := p.Reconcile(context.Background(), jobBody(t, videoID)); err != nil {
+		t.Error(err)
+	}
+	if err := p.Reconcile(context.Background(), []byte("nope")); err != nil {
+		t.Error(err)
+	}
+	env.repo.errs["failed"] = errBoom
+	if err := p.Reconcile(context.Background(), jobBody(t, videoID)); !errors.Is(err, errBoom) {
+		t.Errorf("repository failure: err = %v", err)
+	}
+}

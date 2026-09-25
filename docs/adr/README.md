@@ -11,6 +11,7 @@ one's status.
 | [0002](./0002-repository-layout.md) | Repository layout: single-module monorepo | Accepted |
 | [0003](./0003-object-storage-seaweedfs.md) | Object storage: S3 API, SeaweedFS locally | Accepted |
 | [0004](./0004-transactional-outbox.md) | Transactional outbox for processing jobs | Accepted |
+| [0005](./0005-quorum-queues-delivery-limit.md) | Quorum queues with x-delivery-limit for video.process and video.notify | Accepted |
 
 ## Template
 

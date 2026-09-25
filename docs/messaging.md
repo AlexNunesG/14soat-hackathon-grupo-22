@@ -12,31 +12,62 @@ are the broker part of deliverable **D2**.
 Declared as code (`internal/adapters/rabbitmq/topology.go`,
 `rabbitmq.VideoProcess`, `rabbitmq.VideoNotify`) every time a service
 connects: the outbox relays (api and worker) declare the whole topology,
-each consumer declares its own work queue. An empty broker needs no setup. Everything is durable; queues are classic
-queues (`x-queue-type: classic`).
+each consumer declares its own work queue. An empty broker needs no setup.
+Everything is durable. The work and retry/delay queues are **quorum**
+queues (`x-queue-type: quorum`) with `x-delivery-limit`; the dead-letter
+queues stay classic. See
+[ADR 0005](adr/0005-quorum-queues-delivery-limit.md) for why, the exact
+limits, and the migration note below.
 
 | Resource | Kind | Arguments / binding | Role |
 |---|---|---|---|
 | `videos` | topic exchange | | Every video event is published here. |
-| `video.process` | queue | bound to `videos` with `video.uploaded`; DLX `videos.dlx`, DL key `video.process` | Processing jobs, consumed by the workers. |
-| `video.process.retry.1` / `.2` / `.3` | queues | TTL 2 s / 10 s / 30 s; DLX `""` (default exchange), DL key `video.process` | Delay before retry 1 / 2 / 3. No consumer: expired messages go back to `video.process`. |
+| `video.process` | quorum queue | bound to `videos` with `video.uploaded`; DLX `videos.dlx`, DL key `video.process`; `x-delivery-limit` 5 | Processing jobs, consumed by the workers. |
+| `video.process.retry.1` / `.2` / `.3` | quorum queues | TTL 2 s / 10 s / 30 s; DLX `""` (default exchange), DL key `video.process`; `x-delivery-limit` 5 | Delay before retry 1 / 2 / 3. No consumer: expired messages go back to `video.process`. |
 | `videos.dlx` | direct exchange | | Dead-letter exchange, routed by the name of the queue the message died in. |
-| `video.process.dlq` | queue | bound to `videos.dlx` with `video.process` | Jobs given up on, for inspection or manual replay. |
-| `video.notify` | queue | bound to `videos` with `video.failed`; DLX `videos.dlx`, DL key `video.notify` | Failure events, consumed by the notifier. |
-| `video.notify.retry.1` … `.4` | queues | TTL 10 s / 1 min / 5 min / 15 min; DLX `""`, DL key `video.notify` | Delay before e-mail retry 1 … 4 (about 21 minutes in total, enough to ride out a mail server restart). |
-| `video.notify.dlq` | queue | bound to `videos.dlx` with `video.notify` | Failure events whose e-mail could not be sent. |
+| `video.process.dlq` | classic queue | bound to `videos.dlx` with `video.process` | Jobs given up on (by the worker or by RabbitMQ's own delivery limit), for the reconciler and for inspection or manual replay. |
+| `video.notify` | quorum queue | bound to `videos` with `video.failed`; DLX `videos.dlx`, DL key `video.notify`; `x-delivery-limit` 6 | Failure events, consumed by the notifier. |
+| `video.notify.retry.1` … `.4` | quorum queues | TTL 10 s / 1 min / 5 min / 15 min; DLX `""`, DL key `video.notify`; `x-delivery-limit` 6 | Delay before e-mail retry 1 … 4 (about 21 minutes in total, enough to ride out a mail server restart). |
+| `video.notify.dlq` | classic queue | bound to `videos.dlx` with `video.notify` | Failure events whose e-mail could not be sent. |
+
+`x-delivery-limit` is `WorkQueue.DeliveryLimit()` = `MaxAttempts() + 1`
+(`internal/adapters/rabbitmq/topology.go`): one more than the worker's/
+notifier's own attempt-count ceiling, so it is a **backstop**, not the
+primary retry mechanism — it only fires when a consumer crashes on a
+message before it ever gets to run its handler (see "Reconciling the DLQ"
+below), which a classic queue would otherwise redeliver forever with no
+cap of its own.
+
+### Migrating an existing broker
+
+Queue type is immutable after creation: redeclaring `video.process` (or any
+other queue this changed) with a different `x-queue-type` on a broker that
+already has it as classic fails with `PRECONDITION_FAILED`, and every
+service declares this topology on every connection — so a broker with the
+pre-quorum queues on disk will not let a service start at all. This is dev
+tooling with disposable state, not a production migration target: **delete
+the RabbitMQ volume**. `make down` already runs `docker compose down -v`;
+anyone hitting `PRECONDITION_FAILED` after pulling this change runs it (or
+`docker compose -f deploy/docker-compose.yml down -v`) once, then
+`make up`. CI is unaffected, since it always starts from a fresh volume.
 
 ```
 api (outbox relay) --video.uploaded--> [videos] --> video.process --> worker
-                                                        ^   |  \
-                        TTL 2s/10s/30s expired           |   |   nack (last attempt, malformed)
-             video.process.retry.N  ------------------------+   |        \
-                    ^                                           |         [videos.dlx] --> video.process.dlq
-                    +---- worker republishes (attempt N+1) -----+
+                                                        ^   |  \    \
+                        TTL 2s/10s/30s expired           |   |   nack   crash-looped consumer:
+             video.process.retry.N  ------------------------+   |   (last attempt,  RabbitMQ's own
+                    ^                                           |   malformed)      x-delivery-limit (5)
+                    +---- worker republishes (attempt N+1) -----+        \         /
+                                                                          [videos.dlx]
+                                                                               |
+                                                                       video.process.dlq --> DLQ reconciler
+                                                                                             (worker, every replica)
+                                                                                             marks the video FAILED
 
 worker (outbox relay) --video.failed--> [videos] --> video.notify --> notifier --SMTP--> mail server
                       --video.processed--> [videos] (no queue bound yet: dropped)
           video.notify.retry.1..4 (10s/1m/5m/15m) and video.notify.dlq work like the video.process ones
+          (delivery-limit 6; no DLQ reconciler yet — see ADR 0005 "Later changes")
 ```
 
 `definitions.json` holds the same resources in RabbitMQ's definitions
@@ -119,7 +150,29 @@ more jobs than it runs. For each job:
 | Transient failure on attempt 4 (`WORKER_MAX_ATTEMPTS`, at most 4) | video marked `FAILED`, then nack without requeue → `video.process.dlq` | `FAILED` ("processing failed after several attempts: …") |
 | Malformed body | nack without requeue → DLQ | — |
 | Worker shutting down (job canceled after `SHUTDOWN_TIMEOUT`) | nack with requeue | stays `PROCESSING` until redelivered |
-| Worker crash / connection lost | none: the broker redelivers the unacked job | stays `PROCESSING` until redelivered |
+| Worker crash / connection lost, on attempt n < the queue's `x-delivery-limit` (5) | none: the broker redelivers the unacked job | stays `PROCESSING` until redelivered |
+| Worker crash / connection lost on every delivery, `x-delivery-limit` (5) reached | RabbitMQ itself nacks/dead-letters the message (`x-first-death-reason: delivery_limit`) → `video.process.dlq` | still `PROCESSING` until the DLQ reconciler runs (below) |
+
+### Reconciling the DLQ
+
+The row above is the gap `x-delivery-limit` itself opens (ADR 0005): when
+RabbitMQ gives up on a message because the consumer never got a chance to
+run `Handle` at all, nothing ran the worker's own mark-`FAILED`-and-emit-
+`video.failed` logic for it. `video.process.dlq` therefore holds messages
+of two origins — the worker's own give-up after `WORKER_MAX_ATTEMPTS` (as
+before), and RabbitMQ's own `x-delivery-limit` give-up (new) — and the
+worker runs a small extra consumer, `rabbitmq.DeadLetterConsumer`
+(`internal/adapters/rabbitmq/reconciler.go`, wired in `cmd/worker/main.go`
+alongside the ordinary `video.process` consumer, one per replica, prefetch
+1), that handles both the same way: it decodes the job, looks the video
+up, and if it is not already final, marks it `FAILED` with its
+`video.failed` event — reusing exactly `Processor.GiveUp` (as
+`Processor.Reconcile`, `internal/app/processor.go`), so it is idempotent
+and safe on a redelivered DLQ message. A reconcile failure (e.g. the
+database down) is nacked with requeue after a short delay and retried in
+place, not dropped or looped tightly. Once reconciled, the rest of the
+pipeline (outbox → `video.failed` → notifier → e-mail) runs exactly as for
+any other failure.
 
 ## Notifications (notifier)
 

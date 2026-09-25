@@ -67,15 +67,37 @@ func TestVideoProcessTopology(t *testing.T) {
 	if !slices.Equal(queues, want) {
 		t.Errorf("queues %v, want %v", queues, want)
 	}
+	if got := w.DeliveryLimit(); got != w.MaxAttempts()+1 {
+		t.Errorf("delivery limit %d, want %d (one more than max attempts)", got, w.MaxAttempts()+1)
+	}
 	main := d.Queues[0].Arguments
-	if main["x-dead-letter-exchange"] != "videos.dlx" || main["x-dead-letter-routing-key"] != "video.process" {
+	if main["x-dead-letter-exchange"] != "videos.dlx" || main["x-dead-letter-routing-key"] != "video.process" ||
+		main["x-queue-type"] != "quorum" || main["x-delivery-limit"] != w.DeliveryLimit() {
 		t.Errorf("work queue arguments %v", main)
+	}
+	// The DLQ stays classic, with no delivery-limit: it is a terminal
+	// inspection/replay queue, not at risk of the crash-loop x-delivery-limit
+	// protects against (ADR 0005).
+	dlq := d.Queues[1].Arguments
+	if dlq["x-queue-type"] != "classic" {
+		t.Errorf("dead-letter queue arguments %v, want classic", dlq)
+	}
+	if _, ok := dlq["x-delivery-limit"]; ok {
+		t.Errorf("dead-letter queue arguments %v must not set x-delivery-limit", dlq)
 	}
 	for i, delay := range w.RetryDelays {
 		args := d.Queues[2+i].Arguments
 		if args["x-message-ttl"] != delay.Milliseconds() || args["x-dead-letter-exchange"] != "" ||
-			args["x-dead-letter-routing-key"] != "video.process" {
+			args["x-dead-letter-routing-key"] != "video.process" ||
+			args["x-queue-type"] != "quorum" || args["x-delivery-limit"] != w.DeliveryLimit() {
 			t.Errorf("retry queue %d arguments %v", i+1, args)
+		}
+	}
+	// x-max-priority is not supported by quorum queues (ADR 0005): nothing
+	// in the topology may set it.
+	for _, q := range d.Queues {
+		if _, ok := q.Arguments["x-max-priority"]; ok {
+			t.Errorf("queue %s sets x-max-priority, unsupported on quorum queues", q.Name)
 		}
 	}
 	if len(d.Exchanges) != 2 || d.Exchanges[0].Type != "topic" || d.Exchanges[1].Type != "direct" {

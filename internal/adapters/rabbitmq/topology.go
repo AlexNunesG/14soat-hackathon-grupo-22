@@ -88,6 +88,23 @@ func (w WorkQueue) DeadLetterQueue() string { return w.Queue + ".dlq" }
 // dead-lettered: the first plus one per retry delay.
 func (w WorkQueue) MaxAttempts() int { return len(w.RetryDelays) + 1 }
 
+// deliveryLimitMargin is added to MaxAttempts to get a queue's
+// x-delivery-limit (ADR 0005): the application-level attempt count (the
+// "attempt" header, incremented by the handler on every retry) is the
+// primary mechanism, and RabbitMQ's own delivery-limit is a backstop for
+// the case that mechanism cannot cover — a consumer that crashes before
+// it gets a chance to run its handler at all (OOM, panic mid-job), which a
+// classic queue redelivers forever with no cap of its own. One extra
+// delivery over the app's own ceiling means the backstop never fires
+// before the application's retries would have given up on their own; it
+// only fires when they never ran.
+const deliveryLimitMargin = 1
+
+// DeliveryLimit is the queue's x-delivery-limit (quorum queues only):
+// MaxAttempts, plus one so RabbitMQ's own limit is strictly a backstop for
+// a consumer that never gets to run the handler and record an attempt.
+func (w WorkQueue) DeliveryLimit() int { return w.MaxAttempts() + deliveryLimitMargin }
+
 // exchange, queue and binding describe the resources of a topology.
 type exchange struct {
 	Name string
@@ -104,14 +121,39 @@ type binding struct {
 }
 
 // resources returns what the work queue needs, in declaration order.
+//
+// The work queue and its retry (delay) queues are quorum queues with
+// x-delivery-limit (ADR 0005): a job that crashes its consumer on every
+// delivery (e.g. OOM, a panic mid-ffmpeg-run) is redelivered by the
+// broker's own crash recovery with no attempt count ever incremented, and
+// a classic queue has no cap of its own on that, so it loops forever.
+// x-delivery-limit gives RabbitMQ itself a cap, independent of the
+// consumer ever running its handler.
+//
+// The dead-letter queue stays classic, without a delivery-limit: it is a
+// terminal inspection/replay queue, and the only consumer it gets
+// (the DLQ reconciler, DeadLetterConsumer) never runs ffmpeg or anything
+// else prone to crashing the process on a poison message — a failure
+// there is a transient infrastructure error (e.g. the database down),
+// handled by nacking with requeue and trying again, not by a delivery
+// count. Making it quorum too would buy nothing here and would need its
+// own DLX to be meaningful (a quorum queue drops a message outright past
+// its delivery-limit if it has none), which is unwarranted complexity for
+// a queue nothing but the reconciler and manual replay ever touches.
+//
+// Single-node RabbitMQ (this project's dev/CI compose and k8s setups):
+// the default quorum replication factor of 1 is correct as is, so no
+// x-quorum-initial-group-size is set.
 func (w WorkQueue) resources() ([]exchange, []queue, []binding) {
 	exchanges := []exchange{
 		{Name: w.Exchange, Kind: amqp.ExchangeTopic},
 		{Name: w.DeadLetterExchange, Kind: amqp.ExchangeDirect},
 	}
+	limit := w.DeliveryLimit()
 	queues := []queue{
 		{Name: w.Queue, Args: amqp.Table{
-			"x-queue-type":              "classic",
+			"x-queue-type":              "quorum",
+			"x-delivery-limit":          limit,
 			"x-dead-letter-exchange":    w.DeadLetterExchange,
 			"x-dead-letter-routing-key": w.Queue,
 		}},
@@ -119,7 +161,8 @@ func (w WorkQueue) resources() ([]exchange, []queue, []binding) {
 	}
 	for i, d := range w.RetryDelays {
 		queues = append(queues, queue{Name: w.RetryQueue(i + 1), Args: amqp.Table{
-			"x-queue-type":              "classic",
+			"x-queue-type":              "quorum",
+			"x-delivery-limit":          limit,
 			"x-message-ttl":             d.Milliseconds(),
 			"x-dead-letter-exchange":    "", // the default exchange: straight back to Queue
 			"x-dead-letter-routing-key": w.Queue,

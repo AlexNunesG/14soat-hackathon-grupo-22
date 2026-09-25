@@ -137,6 +137,25 @@ func (p *Processor) Handle(ctx context.Context, body []byte) error {
 	return p.Process(ctx, msg.VideoID)
 }
 
+// ErrDeliveryLimitExceeded is the cause Reconcile gives GiveUp: RabbitMQ's
+// own x-delivery-limit gave up on the job (ADR 0005), not the
+// application's attempt count, which means the consumer never got a
+// chance to run Handle at all (it crashed, was OOM-killed or panicked on
+// every delivery) — so no attempt was ever recorded.
+var ErrDeliveryLimitExceeded = errors.New(
+	"the worker crashed on this job on every delivery, before it could run; RabbitMQ's own delivery limit gave up on it")
+
+// Reconcile is the DeadLetterHandler the worker runs against
+// video.process.dlq (rabbitmq.DeadLetterConsumer): it marks the video of a
+// dead-lettered job FAILED, exactly like GiveUp, for the case that never
+// reached GiveUp because the consumer crashed before Handle ever returned
+// (docs/adr/0005-quorum-queues-delivery-limit.md). It is safe to call more
+// than once for the same job (GiveUp is idempotent), which happens if this
+// message itself is redelivered.
+func (p *Processor) Reconcile(ctx context.Context, body []byte) error {
+	return p.GiveUp(ctx, body, ErrDeliveryLimitExceeded)
+}
+
 // GiveUp records that the job in body failed for good after the retries
 // ran out: its video ends FAILED with cause as the reason.
 func (p *Processor) GiveUp(ctx context.Context, body []byte, cause error) error {

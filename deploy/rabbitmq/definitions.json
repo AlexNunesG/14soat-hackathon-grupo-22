@@ -28,7 +28,8 @@
       "arguments": {
         "x-dead-letter-exchange": "videos.dlx",
         "x-dead-letter-routing-key": "video.process",
-        "x-queue-type": "classic"
+        "x-delivery-limit": 5,
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -48,8 +49,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.process",
+        "x-delivery-limit": 5,
         "x-message-ttl": 2000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -60,8 +62,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.process",
+        "x-delivery-limit": 5,
         "x-message-ttl": 10000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -72,8 +75,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.process",
+        "x-delivery-limit": 5,
         "x-message-ttl": 30000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -84,7 +88,8 @@
       "arguments": {
         "x-dead-letter-exchange": "videos.dlx",
         "x-dead-letter-routing-key": "video.notify",
-        "x-queue-type": "classic"
+        "x-delivery-limit": 6,
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -104,8 +109,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.notify",
+        "x-delivery-limit": 6,
         "x-message-ttl": 10000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -116,8 +122,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.notify",
+        "x-delivery-limit": 6,
         "x-message-ttl": 60000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -128,8 +135,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.notify",
+        "x-delivery-limit": 6,
         "x-message-ttl": 300000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     },
     {
@@ -140,8 +148,9 @@
       "arguments": {
         "x-dead-letter-exchange": "",
         "x-dead-letter-routing-key": "video.notify",
+        "x-delivery-limit": 6,
         "x-message-ttl": 900000,
-        "x-queue-type": "classic"
+        "x-queue-type": "quorum"
       }
     }
   ],

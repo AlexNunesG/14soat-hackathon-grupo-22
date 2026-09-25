@@ -371,9 +371,16 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 - [x] Static analysis: `golangci-lint` (since Phase 0.4), `govulncheck`
       (`make vulncheck`, wired into CI). SonarCloud skipped: needs an
       external account/token this project doesn't have.
-- [ ] Consider quorum queues with `x-delivery-limit` for `video.process`: a
-      job that crashes the worker every time (e.g. OOM) is redelivered forever
-      on a classic queue (found in 2.3).
+- [x] Quorum queues with `x-delivery-limit` for `video.process`, `video.notify`
+      and their retry queues (DLQs stay classic): closes the gap where a
+      crash-on-every-delivery job loops forever on a classic queue.
+      A DLQ consumer (`rabbitmq.DeadLetterConsumer`) marks the video FAILED
+      and notifies the owner when RabbitMQ's own limit — not the app's
+      attempt counter — gives up on a message. [ADR 0005](../docs/adr/0005-quorum-queues-delivery-limit.md),
+      [`docs/messaging.md`](../docs/messaging.md). Verified end to end with a
+      throwaway AMQP client simulating a worker that crashes on every
+      delivery: dead-lettered at exactly `x-delivery-limit`, then reconciled
+      to FAILED with a failure e-mail sent.
 
 ### Phase 6 — CI/CD (RT5)
 - [ ] CI: lint, vet, unit tests, then `docker compose up` and the integration
@@ -432,3 +439,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Phase 2 done: foundation + compose (#20), persistence/auth (#21), outbox/worker/download (#22), Redis cache + web UI (#23), notifications (2.5). All 35 integration tests enabled and passing. |
 | 2026-09-24 | Phase 3 done: correlated logs (#25), metrics on every service (#26), Prometheus + Grafana + alert rules (3.3). |
 | 2026-09-25 | Phase 4 done: Dockerfiles/compose (already delivered), Kubernetes manifests (deploy/k8s/, live-cluster test blocked by this sandbox), RabbitMQ eacces boot bug fixed, k6 spike load test proving RF2 (499/499, 0 lost). |
+| 2026-09-25 | Phase 5 done: coverage gate (95.0%) + govulncheck (found and fixed GO-2026-5676) (#30), quorum queues + delivery-limit + DLQ reconciler for the crash-loop gap. |

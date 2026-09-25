@@ -395,8 +395,14 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       `latest`): `.github/workflows/publish.yml`, a 3-leg matrix (api, worker,
       notifier), gated by branch protection requiring CI (item 4) rather than
       re-running tests. See [`docs/deployment.md`](../docs/deployment.md).
-- [ ] CD: deploy job (to a k8s cluster, or compose on a VM) triggered after
-      images are pushed; document required secrets.
+- [x] CD: deploy job to a k8s cluster (`.github/workflows/deploy.yml`,
+      `workflow_run` after `publish.yml` succeeds), applies
+      `deploy/k8s/overlays/prod` pinned to the just-published commit SHA
+      (never `:latest`), waits for rollout, rolls back on failure. Fails
+      loudly (not silently) if `KUBE_CONFIG`/`PROD_SECRETS_ENV` aren't
+      configured yet — documented in
+      [`docs/deployment.md`](../docs/deployment.md), which also covers
+      compose-on-a-VM as an alternative.
 - [ ] Branch protection on `main` requiring CI to pass.
 
 ### Phase 7 — Documentation and delivery (D1–D4)

@@ -403,7 +403,14 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       configured yet — documented in
       [`docs/deployment.md`](../docs/deployment.md), which also covers
       compose-on-a-VM as an alternative.
-- [ ] Branch protection on `main` requiring CI to pass.
+- [ ] Branch protection on `main` requiring CI to pass. **Needs a repo admin
+      to do this by hand** — no tool in this session can call GitHub's
+      branch-protection API. In Settings → Branches → Add branch protection
+      rule for `main`: enable "Require a pull request before merging" and
+      "Require status checks to pass before merging", then select the
+      `Lint and integration tests` check (from `.github/workflows/ci.yml`)
+      as required. This is also what makes `deploy.yml`'s "every commit on
+      `main` already passed CI" assumption (§ its comments) actually hold.
 
 ### Phase 7 — Documentation and delivery (D1–D4)
 - [ ] `README.md`: overview, how to run locally in one command, how to test,

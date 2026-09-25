@@ -422,14 +422,23 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       notification, the ADR 0005 dead-letter recovery path), data model
       (all 4 tables + CHECK invariants), cross-checked against the real
       code/schema/topology, not the stale original proposal. → **D1**
-- [ ] `docs/adr/` with the decisions from §4 and §5.
+- [x] [`docs/adr/`](../docs/adr/README.md) with the decisions from §4 and §5
+      (0001, 0002) plus the later architecturally significant ones from
+      Phases 2-5 (0003 storage, 0004 outbox, 0005 quorum queues) — already
+      complete, written as each decision was made.
 - [ ] DB and resource scripts referenced from the README (migrations, RabbitMQ
       definitions, storage bucket). → **D2**
 - [ ] Final GitHub repository link(s) collected for submission. → **D3**
-- [ ] Video script/outline (≤ 10 min): docs → architecture → live demo
-      (multiple uploads, scaling workers, status list, download, failure
-      e-mail, Grafana dashboard, CI run). → **D4**
+- [x] Video script/outline (≤ 10 min):
+      [`docs/video-script.md`](../docs/video-script.md), a timed shot list
+      (docs → architecture → live demo: web UI, scaling workers live against
+      Grafana, status list, download, failure e-mail, Grafana tour, CI run
+      → closing). → **D4**
 - [ ] Record and upload the video; add the link to the README. → **D4**
+      **Not done in this session** — recording/hosting a video needs a human
+      (no screen-recording or video-hosting capability here). The script
+      above is ready to record from; see its own "After recording" section
+      for the two remaining steps.
 
 ---
 
@@ -465,3 +474,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Phase 3 done: correlated logs (#25), metrics on every service (#26), Prometheus + Grafana + alert rules (3.3). |
 | 2026-09-25 | Phase 4 done: Dockerfiles/compose (already delivered), Kubernetes manifests (deploy/k8s/, live-cluster test blocked by this sandbox), RabbitMQ eacces boot bug fixed, k6 spike load test proving RF2 (499/499, 0 lost). |
 | 2026-09-25 | Phase 5 done: coverage gate (95.0%) + govulncheck (found and fixed GO-2026-5676) (#30), quorum queues + delivery-limit + DLQ reconciler for the crash-loop gap. |
+| 2026-09-25 | Phase 7 (docs) done except recording the video: README, docs/architecture.md (D1), ADR completeness confirmed, video script/outline (D4 script half). |

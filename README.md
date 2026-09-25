@@ -208,6 +208,7 @@ built this way.
 | [`docs/deployment.md`](docs/deployment.md) | Image publishing (GHCR), CI/CD, Kubernetes/VM deployment |
 | [`docs/quality.md`](docs/quality.md) | Coverage target and vulnerability scanning gates |
 | [`docs/loadtest/README.md`](docs/loadtest/README.md) | k6 spike test and results evidencing RF2 |
+| [`docs/video-script.md`](docs/video-script.md) | Script/outline for the presentation video (D4) |
 | [`deploy/k8s/README.md`](deploy/k8s/README.md) | Kubernetes manifests, config/secrets, applying them |
 | [`tests/integration/README.md`](tests/integration/README.md) | The integration suite, ground rules, how to run it |
 | [`.ai-agents/PLAN.md`](.ai-agents/PLAN.md) | Living plan, checklist and requirement traceability table |

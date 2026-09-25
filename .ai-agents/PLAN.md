@@ -383,13 +383,34 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       to FAILED with a failure e-mail sent.
 
 ### Phase 6 — CI/CD (RT5)
-- [ ] CI: lint, vet, unit tests, then `docker compose up` and the integration
-      suite on every PR (matrix per service).
-- [ ] Build and push images to GHCR on merge to `main` (tag = commit SHA +
-      `latest`).
-- [ ] CD: deploy job (to a k8s cluster, or compose on a VM) triggered after
-      images are pushed; document required secrets.
-- [ ] Branch protection on `main` requiring CI to pass.
+- [x] CI: lint, vet, unit tests, then `docker compose up` and the integration
+      suite on every PR — already in place since Phase 0/2/5 (`ci.yml`: gofmt,
+      vet, golangci-lint, obs-check, k8s-check, the full compose+integration
+      suite, coverage, govulncheck). "Matrix per service" doesn't fit a
+      single-module repo whose integration tests need the *whole* stack up
+      together (each matrix leg would just redundantly re-run the identical
+      `go test ./...`); the natural per-service matrix is the image build in
+      item 2 below, and that's where it lives.
+- [x] Build and push images to GHCR on merge to `main` (tag = commit SHA +
+      `latest`): `.github/workflows/publish.yml`, a 3-leg matrix (api, worker,
+      notifier), gated by branch protection requiring CI (item 4) rather than
+      re-running tests. See [`docs/deployment.md`](../docs/deployment.md).
+- [x] CD: deploy job to a k8s cluster (`.github/workflows/deploy.yml`,
+      `workflow_run` after `publish.yml` succeeds), applies
+      `deploy/k8s/overlays/prod` pinned to the just-published commit SHA
+      (never `:latest`), waits for rollout, rolls back on failure. Fails
+      loudly (not silently) if `KUBE_CONFIG`/`PROD_SECRETS_ENV` aren't
+      configured yet — documented in
+      [`docs/deployment.md`](../docs/deployment.md), which also covers
+      compose-on-a-VM as an alternative.
+- [ ] Branch protection on `main` requiring CI to pass. **Needs a repo admin
+      to do this by hand** — no tool in this session can call GitHub's
+      branch-protection API. In Settings → Branches → Add branch protection
+      rule for `main`: enable "Require a pull request before merging" and
+      "Require status checks to pass before merging", then select the
+      `Lint and integration tests` check (from `.github/workflows/ci.yml`)
+      as required. This is also what makes `deploy.yml`'s "every commit on
+      `main` already passed CI" assumption (§ its comments) actually hold.
 
 ### Phase 7 — Documentation and delivery (D1–D4)
 - [ ] `README.md`: overview, how to run locally in one command, how to test,

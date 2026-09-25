@@ -1,0 +1,201 @@
+name: Deploy
+
+# CD: deploys deploy/k8s/overlays/prod to whatever cluster KUBE_CONFIG
+# points at, after publish.yml has pushed fresh images.
+#
+# workflow_run (not a same-file `needs: publish` job in publish.yml) on
+# purpose:
+#   - publish.yml already documents its own scope precisely ("only builds
+#     and pushes images"); a deploy job living inside it would blur that,
+#     and every future edit to either file risks the other's triggers.
+#   - workflow_run is the standard "run something after another workflow
+#     finishes" pattern and decouples the two files cleanly: this file owns
+#     everything about *shipping* a published image, publish.yml owns
+#     everything about *building* one.
+#   - it keeps deploy.yml independently re-triggerable (workflow_dispatch,
+#     e.g. to redeploy the same images after a rollback or a secret
+#     rotation) without forcing a rebuild, which a `needs:` job cannot do on
+#     its own.
+#   - the gotcha: a workflow_run-triggered run executes using the workflow
+#     file *on the default branch*, not the triggering commit's version of
+#     this file, and its default GITHUB_SHA/ref is the default branch, not
+#     the commit that was published. We check out
+#     `github.event.workflow_run.head_sha` explicitly in the checkout step
+#     below so every other step (image tags, etc.) is pinned to the exact
+#     commit publish.yml just built, not to main's tip.
+on:
+  workflow_run:
+    workflows: ["Publish"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (informational; only "production" is wired up today)
+        required: false
+        default: production
+        type: string
+
+concurrency:
+  # One deploy at a time; a manual re-run should not race a just-finished
+  # publish's automatic deploy.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  deploy-k8s:
+    name: Deploy to Kubernetes (prod overlay)
+    # Only actually deploy for a workflow_run that succeeded, or any manual
+    # dispatch. A failed/cancelled Publish run must not trigger a deploy of
+    # whatever images happen to already be in the registry.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+    env:
+      # Secrets can't be referenced directly in `if:` on steps in every
+      # context, so we map them to job-level env vars once here and gate
+      # steps on `env.X != ''` instead — this is the current, correct
+      # pattern for "skip cleanly, loudly, without failing the job" vs. a
+      # silent no-op.
+      KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG }}
+      PROD_SECRETS_ENV: ${{ secrets.PROD_SECRETS_ENV }}
+    steps:
+      # The commit to deploy: the exact SHA publish.yml just built images
+      # for (workflow_run runs the default-branch copy of this file, but we
+      # still pin the checkout to the triggering commit), or HEAD on a
+      # manual dispatch.
+      - name: Checkout published commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve image tag
+        id: sha
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "value=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fail loudly and stop here, rather than silently reporting success,
+      # when the repo admin hasn't configured the cluster credential yet.
+      - name: Check required secrets
+        run: |
+          if [ -z "$KUBE_CONFIG_B64" ]; then
+            echo "::error::KUBE_CONFIG secret is not set — nothing to deploy to." >&2
+            echo "See docs/deployment.md 'CD: deploying to Kubernetes' for the exact secrets a repo admin must add (KUBE_CONFIG, PROD_SECRETS_ENV) before this workflow can deploy." >&2
+            exit 1
+          fi
+          if [ -z "$PROD_SECRETS_ENV" ]; then
+            echo "::error::PROD_SECRETS_ENV secret is not set — cannot render the app-secrets Secret for overlays/prod." >&2
+            echo "See docs/deployment.md 'CD: deploying to Kubernetes' for its required format (same keys as deploy/k8s/base/config/secrets.env.example)." >&2
+            exit 1
+          fi
+          echo "Required secrets present; deploying commit ${{ steps.sha.outputs.value }}."
+
+      # GitHub-hosted ubuntu runners already ship a recent kubectl (used
+      # as-is by ci.yml's k8s-check step); no separate setup-kubectl action
+      # needed, kept consistent with the rest of this repo's CI.
+      - name: Verify kubectl is available
+        run: kubectl version --client=true
+
+      - name: Write kubeconfig
+        run: |
+          umask 077
+          install -d -m 700 "$RUNNER_TEMP/kube"
+          echo "$KUBE_CONFIG_B64" | base64 -d > "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+
+      # deploy/k8s/overlays/prod/secrets.env is a local, gitignored file per
+      # deploy/k8s/README.md — it structurally cannot exist in a fresh CI
+      # checkout. Reconstruct it here from PROD_SECRETS_ENV, a single
+      # multi-line GitHub secret holding the exact KEY=VALUE lines
+      # deploy/k8s/base/config/secrets.env.example documents (POSTGRES_USER,
+      # POSTGRES_PASSWORD, POSTGRES_DB, DATABASE_URL, RABBITMQ_USER,
+      # RABBITMQ_PASSWORD, RABBITMQ_ERLANG_COOKIE, AMQP_URL, S3_ACCESS_KEY,
+      # S3_SECRET_KEY, JWT_SECRET, SMTP_USERNAME, SMTP_PASSWORD). This file
+      # only ever exists in the job's own workspace and is never committed.
+      - name: Render prod secrets.env from PROD_SECRETS_ENV
+        run: |
+          umask 077
+          printf '%s\n' "$PROD_SECRETS_ENV" > deploy/k8s/overlays/prod/secrets.env
+
+      # Pin the three images to the commit SHA that was just published
+      # (never :latest, for a reproducible rollout). Rather than editing
+      # overlays/prod/kustomization.yaml's committed `images:` entries in
+      # place (`kubectl kustomize` has no `edit` subcommand — that is only
+      # the standalone `kustomize` CLI, which these runners don't have), we
+      # layer a tiny, CI-only sibling overlay that lists overlays/prod as
+      # its sole resource and adds its own `images:` transformer with
+      # newName+newTag; kustomize composes an outer overlay's `images:`
+      # transformer on top of an inner one's, so this deterministically
+      # overrides the tag without touching any committed file. It must sit
+      # next to overlays/prod (kustomize forbids an absolute resource path
+      # outside the working tree) and is removed at the end of the job.
+      - name: Write CI image-pinning overlay
+        run: |
+          owner_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          sha="${{ steps.sha.outputs.value }}"
+          dir=deploy/k8s/overlays/_cd-pinned
+          mkdir -p "$dir"
+          cat > "$dir/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../prod
+          images:
+            - name: video-processor/api
+              newName: ${REGISTRY}/${owner_repo}/api
+              newTag: "${sha}"
+            - name: video-processor/worker
+              newName: ${REGISTRY}/${owner_repo}/worker
+              newTag: "${sha}"
+            - name: video-processor/notifier
+              newName: ${REGISTRY}/${owner_repo}/notifier
+              newTag: "${sha}"
+          EOF
+          echo "CD_OVERLAY=$dir" >> "$GITHUB_ENV"
+
+      - name: Render manifests (review)
+        run: kubectl kustomize "$CD_OVERLAY" > "$RUNNER_TEMP/prod-rendered.yaml"
+
+      - name: Apply
+        run: kubectl apply -k "$CD_OVERLAY"
+
+      - name: Remove CI image-pinning overlay
+        if: always()
+        run: rm -rf deploy/k8s/overlays/_cd-pinned
+
+      # rollout status is the simplest meaningful smoke check here: it
+      # already confirms new pods pass their readiness probes (which hit
+      # /healthz and /readyz, wired to the real dependencies) before
+      # returning success, without the extra moving parts of spinning up a
+      # one-off in-cluster curl pod for a hackathon-scale pipeline.
+      - name: Wait for rollout
+        run: |
+          kubectl -n video-processor rollout status deployment/api --timeout=120s
+          kubectl -n video-processor rollout status deployment/worker --timeout=120s
+          kubectl -n video-processor rollout status deployment/notifier --timeout=120s
+
+      # Simple safety net: if the new rollout never becomes healthy, revert
+      # each Deployment to its previous ReplicaSet rather than leaving the
+      # cluster mid-rollout. `rollout undo` is low-risk (it only touches the
+      # Deployments this job just updated, not infra/data) and gives a
+      # non-interactive pipeline an automatic way back to the last-known-good
+      # image instead of paging someone at hackathon-demo time.
+      - name: Roll back on failure
+        if: failure()
+        run: |
+          kubectl -n video-processor rollout undo deployment/api || true
+          kubectl -n video-processor rollout undo deployment/worker || true
+          kubectl -n video-processor rollout undo deployment/notifier || true
+
+      - name: Clean up kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kube/config"

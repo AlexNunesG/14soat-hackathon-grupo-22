@@ -45,6 +45,13 @@ spec:
               valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_USER } }
             - name: RABBITMQ_DEFAULT_PASS
               valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_PASSWORD } }
+            # Written to .erlang.cookie on every boot with the right
+            # permissions (see the comment on this key in
+            # base/config/secrets.env.example): a stale or wrongly-
+            # permissioned leftover in the PVC makes the node refuse to
+            # start with "eacces".
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_ERLANG_COOKIE } }
           volumeMounts:
             - name: data
               mountPath: /var/lib/rabbitmq

@@ -383,10 +383,18 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       to FAILED with a failure e-mail sent.
 
 ### Phase 6 — CI/CD (RT5)
-- [ ] CI: lint, vet, unit tests, then `docker compose up` and the integration
-      suite on every PR (matrix per service).
-- [ ] Build and push images to GHCR on merge to `main` (tag = commit SHA +
-      `latest`).
+- [x] CI: lint, vet, unit tests, then `docker compose up` and the integration
+      suite on every PR — already in place since Phase 0/2/5 (`ci.yml`: gofmt,
+      vet, golangci-lint, obs-check, k8s-check, the full compose+integration
+      suite, coverage, govulncheck). "Matrix per service" doesn't fit a
+      single-module repo whose integration tests need the *whole* stack up
+      together (each matrix leg would just redundantly re-run the identical
+      `go test ./...`); the natural per-service matrix is the image build in
+      item 2 below, and that's where it lives.
+- [x] Build and push images to GHCR on merge to `main` (tag = commit SHA +
+      `latest`): `.github/workflows/publish.yml`, a 3-leg matrix (api, worker,
+      notifier), gated by branch protection requiring CI (item 4) rather than
+      re-running tests. See [`docs/deployment.md`](../docs/deployment.md).
 - [ ] CD: deploy job (to a k8s cluster, or compose on a VM) triggered after
       images are pushed; document required secrets.
 - [ ] Branch protection on `main` requiring CI to pass.

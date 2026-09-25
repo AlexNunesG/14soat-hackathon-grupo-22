@@ -1,0 +1,78 @@
+name: Publish
+
+# Triggered only by a push to main, i.e. after a PR merges — separate from
+# ci.yml so the two workflows (test-on-every-PR vs publish-on-merge) can be
+# read and reasoned about independently, and so a change to one's steps
+# never risks the other's trigger conditions.
+#
+# Gating: this workflow only runs on pushes to main, and every such push has
+# already gone through ci.yml as the PR's required check (Phase 6 item 4:
+# branch protection on main requiring CI to pass) before it could be merged.
+# Re-running the full test job here (or via workflow_run, which adds its own
+# SHA-tracking complexity) would just repeat work CI already did for the
+# same commit, so this workflow builds and pushes without re-running tests.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    name: Build and push ${{ matrix.service }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # One leg per service image (api, worker, notifier): this is the
+      # natural "matrix per service" for this repo (single Go module, three
+      # binaries/Dockerfiles) — see the item-1 reasoning in PLAN.md.
+      matrix:
+        service: [api, worker, notifier]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR requires a lowercase repository path; github.repository (owner/repo)
+      # can contain uppercase letters.
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}/${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/${{ matrix.service }}.Dockerfile
+          push: true
+          # GOPROXY is left unset/empty, same as docker-compose.yml's
+          # default: GitHub's runners reach proxy.golang.org directly.
+          build-args: |
+            VERSION=${{ github.sha }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

@@ -355,8 +355,14 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       not possible in this session's nested sandbox** — a kind cluster hangs
       starting its own hostNetwork control-plane pods here — and should be
       re-run once in a normal environment before relying on this for the demo.
-- [ ] Load test (k6 or vegeta) proving no lost requests during a spike;
-      save results in `docs/`. → evidence for **RF2**
+- [x] Load test (k6) proving no lost requests during a spike; results in
+      [`docs/loadtest/`](../docs/loadtest/README.md). → evidence for **RF2**:
+      a `ramping-arrival-rate` spike (5→30→5 req/s) against `POST
+      /api/v1/videos` gave 499/499 accepted (0 rejected, 0.000%
+      `http_req_failed`), and every accepted id was independently confirmed
+      `DONE` (0 lost, 0 stuck) after the spike, corroborated by Prometheus.
+      Reproduced 3 times (subagent) + 2 independent verification runs (this
+      session) with identical outcomes.
 
 ### Phase 5 — Quality (RT4)
 - [ ] Coverage report in CI; target ≥ 80% on domain/use cases.
@@ -421,3 +427,4 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 | 2026-09-24 | Phase 1 done: OpenAPI v1 contract (#15), stack harness + legacy tests removed (#16), 35 v1 tests all skipped (#17, #18; validated against a throwaway fake), README/Makefile/CI cleanup. |
 | 2026-09-24 | Phase 2 done: foundation + compose (#20), persistence/auth (#21), outbox/worker/download (#22), Redis cache + web UI (#23), notifications (2.5). All 35 integration tests enabled and passing. |
 | 2026-09-24 | Phase 3 done: correlated logs (#25), metrics on every service (#26), Prometheus + Grafana + alert rules (3.3). |
+| 2026-09-25 | Phase 4 done: Dockerfiles/compose (already delivered), Kubernetes manifests (deploy/k8s/, live-cluster test blocked by this sandbox), RabbitMQ eacces boot bug fixed, k6 spike load test proving RF2 (499/499, 0 lost). |

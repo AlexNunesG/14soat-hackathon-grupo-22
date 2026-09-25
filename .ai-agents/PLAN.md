@@ -417,9 +417,11 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
       command (`make up`), how to test, API examples (curl, verified live end
       to end), env vars, D2 resource-script pointers, D3 repo link, and a
       documentation index.
-- [ ] `docs/architecture.md`: context + container diagrams (C4 / Mermaid),
-      sequence diagrams (upload, processing, failure notification), data model.
-      → **D1**
+- [x] [`docs/architecture.md`](../docs/architecture.md): context + container
+      diagrams, 3 sequence diagrams (upload/processing/download, failure
+      notification, the ADR 0005 dead-letter recovery path), data model
+      (all 4 tables + CHECK invariants), cross-checked against the real
+      code/schema/topology, not the stale original proposal. → **D1**
 - [ ] `docs/adr/` with the decisions from §4 and §5.
 - [ ] DB and resource scripts referenced from the README (migrations, RabbitMQ
       definitions, storage bucket). → **D2**

@@ -1,0 +1,93 @@
+# "Prod-shaped" overlay: more replicas, HPA on, tuned resources, real
+# secrets. Still assumes in-cluster infra (base/infra/*) unless you delete
+# those resources and point app-config/app-secrets at managed services
+# (RDS/ElastiCache/Amazon MQ/S3/a real SMTP provider) — see
+# deploy/k8s/README.md, "Going to managed services".
+#
+# Secrets: this overlay REPLACES the base's app-secrets generator (which
+# uses committed, placeholder values) with one reading
+# overlays/prod/secrets.env — a gitignored file (deploy/k8s/.gitignore)
+# that does not exist until you create it:
+#   cp ../../base/config/secrets.env.example secrets.env
+#   $EDITOR secrets.env   # real DB/AMQP/S3/JWT/SMTP credentials
+# `kubectl kustomize`/`apply -k` on this overlay fail until that file
+# exists, by design: it is the only thing here that can carry a real
+# credential, so it must be a deliberate, local, untracked step.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+secretGenerator:
+  - name: app-secrets
+    behavior: replace
+    envs:
+      - secrets.env
+
+images:
+  # Point at your registry and a real tag/digest before applying, e.g.:
+  #   kustomize edit set image video-processor/api=ghcr.io/<org>/video-processor-api:1.2.3
+  - name: video-processor/api
+    newTag: latest
+  - name: video-processor/worker
+    newTag: latest
+  - name: video-processor/notifier
+    newTag: latest
+
+patches:
+  - target: { kind: Deployment, name: api }
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 250m, memory: 128Mi }
+          limits: { cpu: "1", memory: 512Mi }
+  - target: { kind: Deployment, name: worker }
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 500m, memory: 256Mi }
+          limits: { cpu: "2", memory: 1Gi }
+  - target: { kind: Deployment, name: notifier }
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Always
+  - target: { kind: HorizontalPodAutoscaler, name: api }
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  - target: { kind: HorizontalPodAutoscaler, name: worker }
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 16
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: prod
+    includeSelectors: false

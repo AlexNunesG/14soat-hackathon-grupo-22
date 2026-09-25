@@ -70,5 +70,6 @@ gofmt -l .            # must print nothing
 go vet ./...
 golangci-lint run ./...  # pinned version: make tools
 make obs-check        # promtool check of deploy/prometheus (docker)
+make k8s-check        # kubectl kustomize render of deploy/k8s (offline)
 go test -race ./...   # needs ffmpeg in PATH
 ```

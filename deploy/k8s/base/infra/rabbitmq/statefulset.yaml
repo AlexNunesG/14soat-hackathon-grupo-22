@@ -1,0 +1,102 @@
+# RabbitMQ 4 with management + Prometheus plugins (same image and
+# enabled_plugins as deploy/docker-compose.yml / deploy/rabbitmq). The
+# topology (exchanges, queues, DLQs) is declared on connect by the api,
+# worker and notifier, same as compose — deploy/rabbitmq/definitions.json
+# documents it, it is not applied here. A managed deployment swaps this for
+# Amazon MQ / CloudAMQP and points AMQP_URL at it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: infra
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/component: infra
+    spec:
+      # Fixed hostname (like compose's `hostname: rabbitmq`) so the node
+      # name (rabbit@rabbitmq-0.rabbitmq...) is stable across restarts and
+      # durable queues in the PVC survive them.
+      hostname: rabbitmq
+      subdomain: rabbitmq
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4-management-alpine
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+            - name: metrics
+              containerPort: 15692
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_USER } }
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom: { secretKeyRef: { name: app-secrets, key: RABBITMQ_PASSWORD } }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+            - name: plugins
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+          readinessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "-q", "check_port_connectivity"] }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "-q", "check_running"] }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+      volumes:
+        - name: plugins
+          configMap:
+            name: rabbitmq-plugins
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: infra
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+    - name: metrics
+      port: 15692
+      targetPort: 15692

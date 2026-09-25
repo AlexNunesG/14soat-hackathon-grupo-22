@@ -1,0 +1,28 @@
+# Scales the `worker` Deployment on the ready-message depth of the
+# video.process queue (RabbitMQ management API, in-cluster:15672). At 5
+# queued jobs per replica or more, KEDA scales worker up, down to
+# minReplicaCount when the queue drains.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-video-process-queue
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 1
+  maxReplicaCount: 16
+  cooldownPeriod: 120
+  pollingInterval: 15
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: video.process
+        mode: QueueLength
+        value: "5"
+        protocol: http
+        # RabbitMQ Service is headless with name "rabbitmq"; the
+        # management API listens on 15672 (base/infra/rabbitmq).
+        host: http://rabbitmq.video-processor.svc.cluster.local:15672
+        vhostName: /
+      authenticationRef:
+        name: rabbitmq-trigger-auth

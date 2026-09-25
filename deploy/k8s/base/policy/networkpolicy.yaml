@@ -1,0 +1,50 @@
+# Minimal, opt-in traffic shape: only the api is reachable from outside its
+# own pods (the web UI + the public API). Ingress traffic to every other
+# workload must come from inside the namespace. This does not restrict
+# egress: api/worker/notifier all need to reach postgres/rabbitmq/redis/
+# storage/mailhog, and blocking egress by default would need one rule per
+# dependency for little extra safety in a hackathon cluster.
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, ...); kind's
+# default (kindnet) does not, so this has no effect there — kept for
+# clusters that do enforce it, and validated structurally
+# (`kubectl apply --dry-run=client`) either way.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    app.kubernetes.io/component: policy
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-ingress
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: policy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes: ["Ingress"]
+  ingress:
+    - {} # from anywhere (the public API/UI); tighten with an ingress controller in front in real clusters.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  labels:
+    app.kubernetes.io/component: policy
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: video-processor

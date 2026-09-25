@@ -1,0 +1,22 @@
+# Opt-in stretch goal: scale `worker` on the depth of the video.process
+# queue instead of (or alongside) CPU. Requires the KEDA operator installed
+# in the cluster (https://keda.sh, not part of this repo's stack) and the
+# RabbitMQ management API reachable at the URL below (base/infra/rabbitmq
+# exposes it in-cluster on :15672).
+#
+# Not included in overlays/dev or overlays/prod: apply it explicitly after
+# installing KEDA, e.g.:
+#   helm repo add kedacore https://kedacore.github.io/charts
+#   helm install keda kedacore/keda --namespace keda --create-namespace
+#   kubectl apply -k deploy/k8s/keda
+#
+# With this ScaledObject present, keep the CPU-based HPA on `worker`
+# (deploy/k8s/base/policy/hpa.yaml) disabled or removed — KEDA creates and
+# owns its own HPA for the same Deployment, and two HPAs targeting one
+# Deployment fight each other.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: video-processor
+resources:
+  - trigger-auth.yaml
+  - scaledobject.raw.yaml

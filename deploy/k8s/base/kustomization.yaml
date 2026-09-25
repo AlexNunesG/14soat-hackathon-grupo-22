@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: video-processor
+
+resources:
+  - namespace/namespace.yaml
+  - infra/postgres/statefulset.yaml
+  - infra/redis/deployment.yaml
+  - infra/rabbitmq/statefulset.yaml
+  - infra/storage/deployment.yaml
+  - infra/mailhog/deployment.yaml
+  - app/migrate/job.yaml
+  - app/api/deployment.yaml
+  - app/worker/deployment.yaml
+  - app/notifier/deployment.yaml
+  - policy/hpa.yaml
+  - policy/pdb.yaml
+  - policy/networkpolicy.yaml
+
+configMapGenerator:
+  - name: app-config
+    envs:
+      - config/app.env
+  - name: rabbitmq-plugins
+    files:
+      - infra/rabbitmq/enabled_plugins
+
+# Placeholder, development-only values (base/config/secrets.env.example),
+# committed so the base renders and applies on its own for local (kind)
+# testing. Overlays that need real values point this generator at a
+# gitignored overlays/<name>/secrets.env instead — see
+# overlays/prod/kustomization.yaml and secrets.env.example's header.
+secretGenerator:
+  - name: app-secrets
+    envs:
+      - config/secrets.env.example
+
+# Kustomize's Secret/ConfigMap hash suffixes (e.g. app-config-8fk2gh) and
+# automatic rolling-update annotations are left on: a config/secret change
+# picked up by `kubectl apply -k` restarts the pods that use it.
+generatorOptions:
+  disableNameSuffixHash: false
+
+images:
+  - name: video-processor/api
+    newTag: dev
+  - name: video-processor/worker
+    newTag: dev
+  - name: video-processor/notifier
+    newTag: dev
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: video-processor
+    includeSelectors: true

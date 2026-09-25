@@ -1,0 +1,13 @@
+# RabbitMQ credentials for KEDA's rabbitmq scaler, from the same app-secrets
+# Secret base/config/secrets.env.example (or a real overlays/prod/secrets.env)
+# generates — this dir assumes it applies on top of an overlay that already
+# created that Secret (e.g. `kubectl apply -k overlays/dev` first).
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: rabbitmq-trigger-auth
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: app-secrets
+      key: AMQP_URL

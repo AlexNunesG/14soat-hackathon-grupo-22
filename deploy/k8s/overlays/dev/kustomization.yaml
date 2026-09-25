@@ -1,0 +1,46 @@
+# Local/dev overlay: single replica everywhere, no HPA (nothing to
+# autoscale with one replica and no metrics-server guarantee), images
+# pulled from the node's local image cache (`kind load docker-image`,
+# imagePullPolicy: IfNotPresent already set in base). Apply with:
+#   kubectl apply -k deploy/k8s/overlays/dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: worker
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  # No HPA in dev: fixed single replicas are enough to exercise the stack,
+  # and kind has no metrics-server unless installed separately (README).
+  - patch: |
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: api
+        $patch: delete
+  - patch: |
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: worker
+        $patch: delete
+
+images:
+  - name: video-processor/api
+    newTag: dev
+  - name: video-processor/worker
+    newTag: dev
+  - name: video-processor/notifier
+    newTag: dev
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: dev
+    includeSelectors: false

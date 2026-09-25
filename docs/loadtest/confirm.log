@@ -1,0 +1,23 @@
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /scripts/confirm.js
+        output: -
+
+     scenarios: (100.00%) 1 scenario, 1 max VUs, 4m30s max duration (incl. graceful stop):
+              * confirm: 1 iterations shared among 1 VUs (maxDuration: 4m0s, gracefulStop: 30s)
+
+time="2026-09-25T03:14:48Z" level=info msg="confirm: parsed 499 accepted id(s) and 8 user token(s) from /out/spike.log" source=console
+time="2026-09-25T03:14:49Z" level=info msg="confirm: round 1: checked 499, 0 still pending" source=console
+time="2026-09-25T03:14:49Z" level=info msg="confirm: final: 499/499 reached DONE/FAILED, 0 never reached a final status within 180s" source=console
+CONFIRM PHASE SUMMARY
+accepted_ids=499 confirmed_final=499 confirmed_failed_status=0 lost=0
+
+running (0m00.3s), 0/1 VUs, 1 complete and 0 interrupted iterations
+confirm ✓ [ 100% ] 1 VUs  0m00.3s/4m0s  1/1 shared iters

@@ -17,7 +17,7 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 .DEFAULT_GOAL := help
 
 .PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down migrate logs docker-build compose-file obs-check k8s-check check clean
+	up down migrate logs docker-build compose-file obs-check k8s-check check clean loadtest
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -105,6 +105,32 @@ k8s-check: ## Validate the Kubernetes manifests render (kubectl kustomize, offli
 	fi
 
 check: lint obs-check k8s-check test ## Run everything CI runs; use before pushing
+
+# Compose's default network name (project-dir_default); override if the
+# stack was started with COMPOSE_PROJECT_NAME set, e.g.
+#   make loadtest LOADTEST_NETWORK=myproject_default
+LOADTEST_NETWORK ?= video-processor_default
+LOADTEST_OUT_DIR := docs/loadtest
+K6_IMAGE ?= grafana/k6:latest
+
+loadtest: up ## Run the k6 spike load test (RF2, deploy/loadtest/) against the local stack; results in docs/loadtest/
+	@mkdir -p $(LOADTEST_OUT_DIR)
+	@echo "--- phase 1/2: spike load (deploy/loadtest/spike.js) ---"
+	@bash -c 'set -o pipefail; docker run --rm --network $(LOADTEST_NETWORK) -u root \
+		-v "$(CURDIR)/deploy/loadtest:/scripts:ro" \
+		-v "$(CURDIR)/$(LOADTEST_OUT_DIR):/out" \
+		-e BASE_URL=http://api:8080 \
+		-e LOADTEST_OUT_DIR=/out \
+		$(K6_IMAGE) run /scripts/spike.js 2>&1 | tee $(LOADTEST_OUT_DIR)/spike.log'
+	@echo "--- phase 2/2: confirm every accepted video reaches DONE/FAILED (deploy/loadtest/confirm.js) ---"
+	@bash -c 'set -o pipefail; docker run --rm --network $(LOADTEST_NETWORK) -u root \
+		-v "$(CURDIR)/deploy/loadtest:/scripts:ro" \
+		-v "$(CURDIR)/$(LOADTEST_OUT_DIR):/out" \
+		-e BASE_URL=http://api:8080 \
+		-e LOADTEST_OUT_DIR=/out \
+		-e LOADTEST_SPIKE_LOG=/out/spike.log \
+		$(K6_IMAGE) run /scripts/confirm.js 2>&1 | tee $(LOADTEST_OUT_DIR)/confirm.log'
+	@echo "results: $(LOADTEST_OUT_DIR)/{spike,confirm}-report.md, {spike,confirm}-summary.json, {spike,confirm}.log"
 
 clean: ## Remove coverage output
 	rm -f coverage.out coverage.txt

@@ -342,12 +342,19 @@ challenge PDF, fix the test first in a separate PR (Ground rule 2).
 - [x] Prometheus + Grafana in compose with a provisioned dashboard (Prometheus :9091, Grafana :3000, 12 alert rules checked by `make obs-check` in CI; see [`docs/observability.md`](../docs/observability.md)).
 
 ### Phase 4 — Containers and infrastructure (RT2)
-- [ ] Multi-stage Dockerfile per service (worker image includes ffmpeg),
-      non-root user.
-- [ ] Add api, worker, notifier, prometheus and grafana to `docker-compose.yml`.
-- [ ] Kubernetes manifests (or Helm/Kustomize) in `deploy/k8s/`: Deployments,
-      Services, ConfigMaps, Secrets, HPA for api and worker (KEDA on queue
-      length as a stretch goal).
+- [x] Multi-stage Dockerfile per service (worker image includes ffmpeg),
+      non-root user (done in Phases 2.1/2.3/2.5:
+      `deploy/docker/{api,worker,notifier}.Dockerfile`).
+- [x] Add api, worker, notifier, prometheus and grafana to `docker-compose.yml` (done in Phases 2 and 3.3).
+- [x] Kubernetes manifests (Kustomize) in [`deploy/k8s/`](../deploy/k8s/README.md):
+      `base/` + `overlays/{dev,prod}`, in-cluster infra StatefulSets/Deployments,
+      a `migrate` Job, ConfigMap/Secret, HPA (api, worker) and an opt-in KEDA
+      `ScaledObject` on `video.process` queue length. Manifests render and
+      validate against the k8s 1.31 schema (`make k8s-check`, wired into CI);
+      **live-cluster testing (pods Ready, healthz/readyz, a smoke upload) was
+      not possible in this session's nested sandbox** — a kind cluster hangs
+      starting its own hostNetwork control-plane pods here — and should be
+      re-run once in a normal environment before relying on this for the demo.
 - [ ] Load test (k6 or vegeta) proving no lost requests during a spike;
       save results in `docs/`. → evidence for **RF2**
 

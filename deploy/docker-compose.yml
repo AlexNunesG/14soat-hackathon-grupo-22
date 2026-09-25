@@ -76,6 +76,11 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-video}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-video}
+      # Written to .erlang.cookie on every boot with the right permissions,
+      # instead of relying on a file generated once and left in the volume
+      # (see .env.example): a stale or wrongly-permissioned leftover makes
+      # the node refuse to start with "eacces", seen on a clean CI volume.
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-dev-only-erlang-cookie-change-me}
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672" # management UI

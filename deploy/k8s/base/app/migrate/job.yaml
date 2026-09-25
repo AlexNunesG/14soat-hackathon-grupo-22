@@ -1,0 +1,43 @@
+# One-shot Job: applies the DB migrations embedded in the api binary
+# (`api migrate`), same as the compose `migrate` service. Run it and wait
+# for completion BEFORE applying api/worker/notifier — see
+# deploy/k8s/README.md. Re-run with e.g.:
+#   kubectl delete job/migrate -n video-processor --ignore-not-found
+#   kubectl apply -k deploy/k8s/overlays/dev
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app.kubernetes.io/name: migrate
+    app.kubernetes.io/component: app
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migrate
+        app.kubernetes.io/component: app
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: video-processor/api:dev
+          command: ["/usr/local/bin/api", "migrate"]
+          envFrom:
+            - configMapRef: { name: app-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: app-secrets, key: DATABASE_URL } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 128Mi }

@@ -1,0 +1,3 @@
+# Real secret values for a non-dev cluster (see base/config/secrets.env.example
+# and overlays/prod/kustomization.yaml). Never commit this.
+overlays/*/secrets.env

@@ -17,7 +17,7 @@ GOLANGCI_LINT ?= $(or $(wildcard $(GOBIN_DIR)/golangci-lint),$(shell command -v 
 .DEFAULT_GOAL := help
 
 .PHONY: help tools fmt fmt-check vet golangci-lint lint test test-integration build \
-	up down migrate logs docker-build compose-file obs-check check clean
+	up down migrate logs docker-build compose-file obs-check k8s-check check clean
 
 help: ## Show this help
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -91,7 +91,20 @@ obs-check: ## Validate the Prometheus config and alert rules with promtool (dock
 	$(PROMTOOL) check config /etc/prometheus/prometheus.yml
 	$(PROMTOOL) check rules $(patsubst deploy/prometheus/%,/etc/prometheus/%,$(wildcard deploy/prometheus/rules/*.yml))
 
-check: lint obs-check test ## Run everything CI runs; use before pushing
+# overlays/prod needs a real deploy/k8s/overlays/prod/secrets.env (gitignored,
+# see deploy/k8s/README.md); it is rendered only when that file exists.
+k8s-check: ## Validate the Kubernetes manifests render (kubectl kustomize, offline)
+	@command -v kubectl >/dev/null || { echo "kubectl not found: see https://kubernetes.io/docs/tasks/tools/#kubectl" >&2; exit 1; }
+	kubectl kustomize deploy/k8s/base >/dev/null
+	kubectl kustomize deploy/k8s/overlays/dev >/dev/null
+	kubectl kustomize deploy/k8s/keda >/dev/null
+	@if [ -f deploy/k8s/overlays/prod/secrets.env ]; then \
+		kubectl kustomize deploy/k8s/overlays/prod >/dev/null; \
+	else \
+		echo "skipping overlays/prod render: deploy/k8s/overlays/prod/secrets.env not present (see deploy/k8s/README.md)"; \
+	fi
+
+check: lint obs-check k8s-check test ## Run everything CI runs; use before pushing
 
 clean: ## Remove coverage output
 	rm -f coverage.out coverage.txt
